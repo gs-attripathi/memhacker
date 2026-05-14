@@ -414,19 +414,30 @@ func (ms *MemoryScanner) NextScan(params ScanParams) int {
 				}
 
 				// Read a chunk covering this address + next ~64KB to amortize syscall cost
-				const chunkSize = 64 * 1024
-				data, err := ReadMemory(ms.handle, r.Address, chunkSize)
-				if err != nil || len(data) < sz {
-					// Fallback: read just this address
-					data, err = ReadMemory(ms.handle, r.Address, sz)
-					if err != nil || len(data) < sz {
-						continue
+					// But don't cross memory region boundaries — query region size first
+					const chunkSize = 64 * 1024
+					readSize := chunkSize
+					if mbi, err2 := QueryRegion(ms.handle, r.Address); err2 == nil {
+						regionEnd := mbi.BaseAddress + mbi.RegionSize
+						if r.Address+uintptr(readSize) > regionEnd {
+							readSize = int(regionEnd - r.Address)
+						}
 					}
-					regionData = nil
-				} else {
-					regionData = data
-					regionBase = r.Address
-				}
+					if readSize < sz {
+						readSize = sz
+					}
+					data, err := ReadMemory(ms.handle, r.Address, readSize)
+					if err != nil || len(data) < sz {
+						// Fallback: read just this address
+						data, err = ReadMemory(ms.handle, r.Address, sz)
+						if err != nil || len(data) < sz {
+							continue
+						}
+						regionData = nil
+					} else {
+						regionData = data
+						regionBase = r.Address
+					}
 
 				newVal := data[:sz]
 				keep := compareValues(params.DT, r.Value, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
