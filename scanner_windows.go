@@ -255,7 +255,9 @@ func NewMemoryScanner(handle windows.Handle) *MemoryScanner {
 }
 
 func (ms *MemoryScanner) FirstScan(params ScanParams) int {
+	Log.Info("FirstScan: type=%s scan=%d writable=%v", dataTypeName(params.DT), params.ST, params.Writable)
 	regions := EnumMemoryRegions(ms.handle, params.Writable)
+	Log.Debug("FirstScan: scanning %d memory regions", len(regions))
 	numCPU := runtime.NumCPU()
 
 	jobs := make(chan MEMORY_BASIC_INFORMATION, len(regions))
@@ -312,13 +314,16 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		all = append(all, batch...)
 	}
 	ms.Results = all
+	Log.Info("FirstScan: done, found %d results", len(all))
 	return len(all)
 }
 
 func (ms *MemoryScanner) NextScan(params ScanParams) int {
 	if len(ms.Results) == 0 {
+		Log.Warn("NextScan: called with 0 results")
 		return 0
 	}
+	Log.Info("NextScan: filtering %d results, scan=%d", len(ms.Results), params.ST)
 	numCPU := runtime.NumCPU()
 	batchSize := (len(ms.Results) + numCPU - 1) / numCPU
 
@@ -384,6 +389,7 @@ func (ms *MemoryScanner) NextScan(params ScanParams) int {
 		}
 	}
 	ms.Results = filtered
+	Log.Info("NextScan: done, %d results remaining", len(filtered))
 	return len(filtered)
 }
 
@@ -407,5 +413,10 @@ func (ms *MemoryScanner) ReadCurrentValue(addr uintptr, dt DataType) (string, er
 }
 
 func (ms *MemoryScanner) WriteValue(addr uintptr, data []byte) error {
-	return WriteMemory(ms.handle, addr, data)
+	Log.Info("WriteValue: addr=0x%X size=%d", addr, len(data))
+	err := WriteMemory(ms.handle, addr, data)
+	if err != nil {
+		Log.Error("WriteValue: addr=0x%X failed: %v", addr, err)
+	}
+	return err
 }

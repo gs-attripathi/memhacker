@@ -32,6 +32,15 @@ type addressEntry struct {
 }
 
 func main() {
+	// Init logger — writes to memhacker.log next to the exe
+	logPath := "memhacker.log"
+	if err := InitLogger(logPath, LogDEBUG, true); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not init logger: %v\n", err)
+	} else {
+		defer Log.Close()
+		fmt.Printf("Logging to: %s\n", logPath)
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	printBanner()
 
@@ -52,40 +61,57 @@ func main() {
 		case "list", "ps":
 			cmdListProcesses()
 		case "open", "attach":
+			Log.Info("CMD: open %v", args)
 			cmdOpen(args)
 		case "close", "detach":
+			Log.Info("CMD: close")
 			cmdClose()
 		case "type", "dt":
+			Log.Info("CMD: type %v", args)
 			cmdSetType(args)
 		case "scan", "s":
+			Log.Info("CMD: scan %v", args)
 			cmdScan(args, reader)
 		case "next", "n":
+			Log.Info("CMD: next %v", args)
 			cmdNext(args, reader)
 		case "results", "r":
 			cmdResults(args)
 		case "write", "w":
+			Log.Info("CMD: write %v", args)
 			cmdWrite(args)
 		case "add", "a":
 			cmdAddToList(args)
 		case "addrlist", "al":
 			cmdShowAddressList()
 		case "freeze", "f":
+			Log.Info("CMD: freeze %v", args)
 			cmdFreeze(args)
 		case "unfreeze", "uf":
+			Log.Info("CMD: unfreeze %v", args)
 			cmdUnfreeze(args)
 		case "frozen", "fl":
 			cmdFrozenList()
 		case "read":
+			Log.Info("CMD: read %v", args)
 			cmdRead(args)
 		case "pmap":
+			Log.Info("CMD: pmap")
 			cmdBuildPointerMap()
 		case "pscan":
+			Log.Info("CMD: pscan %v", args)
 			cmdPointerScan(args, reader)
 		case "modules", "mod":
 			cmdModules()
 		case "reset":
+			Log.Info("CMD: reset")
 			cmdReset()
+		case "log":
+			if Log != nil {
+				fmt.Printf("Log file: %s\n", Log.LogPath())
+			}
 		case "exit", "quit", "q":
+			Log.Info("CMD: exit")
 			fmt.Println("Bye!")
 			if currentHandle != 0 {
 				CloseProcessHandle(currentHandle)
@@ -95,6 +121,7 @@ func main() {
 			}
 			os.Exit(0)
 		default:
+			Log.Warn("Unknown command: %s", cmd)
 			fmt.Printf("Unknown command: %s  (type 'help')\n", cmd)
 		}
 	}

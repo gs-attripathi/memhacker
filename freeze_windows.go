@@ -40,13 +40,19 @@ func (f *Freezer) Add(addr uintptr, value []byte, label string) int {
 		Label:   label,
 		Active:  true,
 	}
+	Log.Info("Freeze: id=%d addr=0x%X label=%q", id, addr, label)
 	return id
 }
 
 func (f *Freezer) Remove(id int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.entries, id)
+	if _, ok := f.entries[id]; ok {
+		Log.Info("Unfreeze: id=%d", id)
+		delete(f.entries, id)
+	} else {
+		Log.Warn("Unfreeze: id=%d not found", id)
+	}
 }
 
 func (f *Freezer) Toggle(id int) bool {
@@ -54,8 +60,10 @@ func (f *Freezer) Toggle(id int) bool {
 	defer f.mu.Unlock()
 	if e, ok := f.entries[id]; ok {
 		e.Active = !e.Active
+		Log.Info("Freeze toggle: id=%d active=%v", id, e.Active)
 		return e.Active
 	}
+	Log.Warn("Freeze toggle: id=%d not found", id)
 	return false
 }
 
@@ -79,6 +87,7 @@ func (f *Freezer) List() []struct {
 }
 
 func (f *Freezer) Stop() {
+	Log.Info("Freezer: stopping")
 	close(f.stop)
 }
 
@@ -91,9 +100,12 @@ func (f *Freezer) loop() {
 			return
 		case <-ticker.C:
 			f.mu.Lock()
-			for _, e := range f.entries {
+			for id, e := range f.entries {
 				if e.Active {
-					WriteMemory(f.handle, e.Address, e.Value)
+					err := WriteMemory(f.handle, e.Address, e.Value)
+					if err != nil {
+						Log.Error("Freeze write failed: id=%d addr=0x%X err=%v", id, e.Address, err)
+					}
 				}
 			}
 			f.mu.Unlock()

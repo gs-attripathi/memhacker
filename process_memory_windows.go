@@ -4,18 +4,19 @@ package main
 
 import (
 	"fmt"
-	"golang.org/x/sys/windows"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
-	PROCESS_ALL_ACCESS   = 0x1F0FFF
-	MEM_COMMIT           = 0x1000
-	PAGE_NOACCESS        = 0x01
-	PAGE_GUARD           = 0x100
-	TH32CS_SNAPPROCESS   = 0x2
-	TH32CS_SNAPMODULE    = 0x8
-	TH32CS_SNAPMODULE32  = 0x10
+	PROCESS_ALL_ACCESS  = 0x1F0FFF
+	MEM_COMMIT          = 0x1000
+	PAGE_NOACCESS       = 0x01
+	PAGE_GUARD          = 0x100
+	TH32CS_SNAPPROCESS  = 0x2
+	TH32CS_SNAPMODULE   = 0x8
+	TH32CS_SNAPMODULE32 = 0x10
 )
 
 type MEMORY_BASIC_INFORMATION struct {
@@ -58,13 +59,13 @@ type MODULEENTRY32 struct {
 }
 
 var (
-	modKernel32            = windows.NewLazySystemDLL("kernel32.dll")
-	procVirtualQueryEx     = modKernel32.NewProc("VirtualQueryEx")
-	procVirtualProtectEx   = modKernel32.NewProc("VirtualProtectEx")
-	procModule32First      = modKernel32.NewProc("Module32FirstW")
-	procModule32Next       = modKernel32.NewProc("Module32NextW")
-	procProcess32First     = modKernel32.NewProc("Process32FirstW")
-	procProcess32Next      = modKernel32.NewProc("Process32NextW")
+	modKernel32          = windows.NewLazySystemDLL("kernel32.dll")
+	procVirtualQueryEx   = modKernel32.NewProc("VirtualQueryEx")
+	procVirtualProtectEx = modKernel32.NewProc("VirtualProtectEx")
+	procModule32First    = modKernel32.NewProc("Module32FirstW")
+	procModule32Next     = modKernel32.NewProc("Module32NextW")
+	procProcess32First   = modKernel32.NewProc("Process32FirstW")
+	procProcess32Next    = modKernel32.NewProc("Process32NextW")
 )
 
 type ProcessInfo struct {
@@ -78,18 +79,19 @@ type ModuleInfo struct {
 	Size uint32
 }
 
-// ListProcesses returns all running processes
 func ListProcesses() ([]ProcessInfo, error) {
+	Log.Debug("ListProcesses: creating snapshot")
 	snap, err := windows.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
 	if err != nil {
+		Log.Error("ListProcesses: snapshot failed: %v", err)
 		return nil, fmt.Errorf("snapshot failed: %v", err)
 	}
 	defer windows.CloseHandle(snap)
 
 	var entry PROCESSENTRY32
 	entry.Size = uint32(unsafe.Sizeof(entry))
-
 	var procs []ProcessInfo
+
 	r1, _, _ := procProcess32First.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
 	for r1 != 0 {
 		procs = append(procs, ProcessInfo{
@@ -99,47 +101,52 @@ func ListProcesses() ([]ProcessInfo, error) {
 		entry.Size = uint32(unsafe.Sizeof(entry))
 		r1, _, _ = procProcess32Next.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
 	}
+	Log.Debug("ListProcesses: found %d processes", len(procs))
 	return procs, nil
 }
 
-// OpenProcessHandle opens a process for full access
 func OpenProcessHandle(pid uint32) (windows.Handle, error) {
+	Log.Info("OpenProcess: PID=%d", pid)
 	handle, err := windows.OpenProcess(PROCESS_ALL_ACCESS, false, pid)
 	if err != nil {
+		Log.Error("OpenProcess: PID=%d failed: %v", pid, err)
 		return 0, fmt.Errorf("OpenProcess failed: %v", err)
 	}
+	Log.Info("OpenProcess: PID=%d OK, handle=0x%X", pid, handle)
 	return handle, nil
 }
 
-// CloseProcessHandle closes a handle
 func CloseProcessHandle(handle windows.Handle) {
+	Log.Info("CloseProcessHandle: handle=0x%X", handle)
 	windows.CloseHandle(handle)
 }
 
-// ReadMemory reads bytes from the target process
 func ReadMemory(handle windows.Handle, addr uintptr, size int) ([]byte, error) {
 	buf := make([]byte, size)
 	var read uintptr
 	err := windows.ReadProcessMemory(handle, addr, &buf[0], uintptr(size), &read)
 	if err != nil {
+		Log.Debug("ReadMemory: addr=0x%X size=%d failed: %v", addr, size, err)
 		return nil, err
 	}
 	return buf[:read], nil
 }
 
-// WriteMemory writes bytes to the target process
 func WriteMemory(handle windows.Handle, addr uintptr, data []byte) error {
 	var oldProt uint32
-	// Make writable
+	Log.Debug("WriteMemory: addr=0x%X size=%d", addr, len(data))
 	procVirtualProtectEx.Call(uintptr(handle), addr, uintptr(len(data)), 0x40, uintptr(unsafe.Pointer(&oldProt)))
 	var written uintptr
 	err := windows.WriteProcessMemory(handle, addr, &data[0], uintptr(len(data)), &written)
-	// Restore
 	procVirtualProtectEx.Call(uintptr(handle), addr, uintptr(len(data)), uintptr(oldProt), uintptr(unsafe.Pointer(&oldProt)))
-	return err
+	if err != nil {
+		Log.Error("WriteMemory: addr=0x%X failed: %v", addr, err)
+		return err
+	}
+	Log.Debug("WriteMemory: addr=0x%X wrote %d bytes OK", addr, written)
+	return nil
 }
 
-// QueryRegion queries a memory region
 func QueryRegion(handle windows.Handle, addr uintptr) (*MEMORY_BASIC_INFORMATION, error) {
 	var mbi MEMORY_BASIC_INFORMATION
 	ret, _, err := procVirtualQueryEx.Call(
@@ -164,15 +171,13 @@ func isReadable(mbi *MEMORY_BASIC_INFORMATION) bool {
 	if mbi.Protect&PAGE_GUARD != 0 {
 		return false
 	}
-	readableFlags := uint32(0x02 | 0x04 | 0x20 | 0x40 | 0x80 | 0x10)
-	return mbi.Protect&readableFlags != 0
+	return mbi.Protect&uint32(0x02|0x04|0x20|0x40|0x80|0x10) != 0
 }
 
 func isWritable(mbi *MEMORY_BASIC_INFORMATION) bool {
 	return mbi.Protect&uint32(0x04|0x08|0x40|0x80) != 0
 }
 
-// EnumMemoryRegions enumerates all readable committed regions
 func EnumMemoryRegions(handle windows.Handle, writableOnly bool) []MEMORY_BASIC_INFORMATION {
 	var regions []MEMORY_BASIC_INFORMATION
 	addr := uintptr(0x10000)
@@ -194,21 +199,23 @@ func EnumMemoryRegions(handle windows.Handle, writableOnly bool) []MEMORY_BASIC_
 		}
 		addr = mbi.BaseAddress + mbi.RegionSize
 	}
+	Log.Debug("EnumMemoryRegions: found %d regions (writableOnly=%v)", len(regions), writableOnly)
 	return regions
 }
 
-// GetModules returns all loaded modules of a process
 func GetModules(pid uint32) ([]ModuleInfo, error) {
+	Log.Debug("GetModules: PID=%d", pid)
 	snap, err := windows.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32, pid)
 	if err != nil {
+		Log.Error("GetModules: PID=%d snapshot failed: %v", pid, err)
 		return nil, fmt.Errorf("module snapshot failed: %v", err)
 	}
 	defer windows.CloseHandle(snap)
 
 	var entry MODULEENTRY32
 	entry.Size = uint32(unsafe.Sizeof(entry))
-
 	var mods []ModuleInfo
+
 	r1, _, _ := procModule32First.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
 	for r1 != 0 {
 		mods = append(mods, ModuleInfo{
@@ -219,10 +226,10 @@ func GetModules(pid uint32) ([]ModuleInfo, error) {
 		entry.Size = uint32(unsafe.Sizeof(entry))
 		r1, _, _ = procModule32Next.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
 	}
+	Log.Debug("GetModules: PID=%d found %d modules", pid, len(mods))
 	return mods, nil
 }
 
-// ReadPointer reads a 64-bit pointer value at addr
 func ReadPointer(handle windows.Handle, addr uintptr) (uintptr, error) {
 	buf, err := ReadMemory(handle, addr, 8)
 	if err != nil || len(buf) < 8 {

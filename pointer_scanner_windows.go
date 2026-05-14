@@ -28,6 +28,7 @@ type PointerMap struct {
 // BuildPointerMap scans all writable regions and collects all 8-byte aligned
 // values that look like valid process addresses. This is the CE "pointer map" equivalent.
 func BuildPointerMap(handle windows.Handle, modules []ModuleInfo) (*PointerMap, error) {
+	Log.Info("BuildPointerMap: starting, %d modules", len(modules))
 	// Get all readable regions
 	regions := EnumMemoryRegions(handle, false)
 
@@ -116,6 +117,7 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo) (*PointerMap, 
 	})
 
 	fmt.Printf("[*] Pointer map built: %d pointer entries\n", len(all))
+	Log.Info("BuildPointerMap: done, %d pointer entries", len(all))
 	return &PointerMap{Entries: all}, nil
 }
 
@@ -143,6 +145,7 @@ func BFSPointerScan(
 	maxOffset uintptr,
 	maxResults int,
 ) []PointerResult {
+	Log.Info("BFSPointerScan: target=0x%X depth=%d maxOffset=0x%X maxResults=%d", target, maxDepth, maxOffset, maxResults)
 
 	type searchNode struct {
 		addr    uintptr
@@ -228,6 +231,7 @@ func BFSPointerScan(
 	}
 
 	_ = searchNode{}
+	Log.Info("BFSPointerScan: done, found %d chains", len(results))
 	return results
 }
 
