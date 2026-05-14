@@ -128,8 +128,10 @@ pscan [depth] [offset] [max] [filter]
 | Filter | Description |
 |--------|-------------|
 | `exe` | Main executable only — most reliable, use this first |
-| `game` | Any DLL/EXE inside the game's root directory — detected automatically from exe path, no hardcoded list |
+| `game` | Any module (EXE + DLLs) inside the game's root directory. Root is auto-detected from the main exe's folder at attach time — no hardcoded list, works with any game, any install path, shortcuts included. Superset of `exe` |
 | `all` | All modules including GPU drivers, runtime DLLs — use as last resort |
+
+**Note:** `game` filter requires pmaps built with v1.8.1+ (pmap v3 format). Older pmaps will fall back to name-based detection.
 
 **If `exe` returns 0 results**, the tool suggests:
 ```
@@ -229,7 +231,7 @@ prsave hp_chains.json    <- save clean version
 
 - Needs Administrator / elevated privileges
 - Supports 32-bit (WOW64) and 64-bit processes — auto-detected on attach
-- `game` filter uses actual game directory (from exe path) — works regardless of where game is installed, works with shortcuts
+- `game` filter uses actual game directory from exe path at attach time — works regardless of install location, works with shortcuts. Known limitation: if exe is nested inside game root (e.g. `game/bin/game.exe`) then only `bin/` is considered root, DLLs outside `bin/` won't be detected as game modules. Use `exe` filter in that case
 - System DLLs (kernel32, ntdll etc) always skipped as pointer base
 - Log file: `memhacker.log` in same folder as the exe
 - pmap files are binary — large for 32-bit games (~500MB), keep them safe
