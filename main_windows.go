@@ -117,6 +117,23 @@ func main() {
 		case "pscan":
 			Log.Info("CMD: pscan %v", args)
 			cmdPointerScan(args, reader)
+		case "prsave":
+			Log.Info("CMD: prsave %v", args)
+			cmdPointerResultsSave(args)
+		case "prload":
+			Log.Info("CMD: prload %v", args)
+			cmdPointerResultsLoad(args)
+		case "prverify":
+			Log.Info("CMD: prverify")
+			cmdPointerResultsVerify(args)
+		case "prlist":
+			cmdPointerResultsList()
+		case "prwrite":
+			Log.Info("CMD: prwrite %v", args)
+			cmdPointerResultsWrite(args)
+		case "prfreeze":
+			Log.Info("CMD: prfreeze %v", args)
+			cmdPointerResultsFreeze(args)
 		case "modules", "mod":
 			cmdModules()
 		case "reset":
@@ -195,6 +212,23 @@ POINTER SCANNING (CE-style multi-session)
                                   filter: exe (default), game, all
                                   auto-widens: exe -> game -> all if no results
                                   defaults: depth=7 offset=5000 max=100
+
+POINTER RESULTS (save/load/verify chains)
+  prsave <file.json>            - save last pscan results to JSON file
+  prload <file.json>            - load saved chains + auto-verify against current process
+  prverify                      - re-verify loaded/last chains (use after game restart)
+  prlist                        - list current in-memory chains
+  prwrite <index> <value>       - follow chain, write value once  (e.g: prwrite 1 999)
+  prfreeze <index> <value>      - follow chain, freeze value      (e.g: prfreeze 1 999)
+
+  WORKFLOW (persistent pointers across restarts):
+    pscan                       <- find chains
+    prsave hp.json              <- save them
+    --- game restart ---
+    open game.exe
+    prload hp.json              <- load + auto-verify
+    prwrite 1 999               <- write to chain 1
+    prfreeze 1 999              <- or freeze it
                                   e.g: pscan 7 4096 200 game
 
   WORKFLOW:
@@ -882,28 +916,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		fmt.Println("No chains found. Try: more sessions, bigger depth/offset, or check target addresses.")
 		return
 	}
-	fmt.Println()
-	for i, r := range results {
-		fmt.Printf("[%d] %s\n", i+1, r.Chain.String())
-	}
-
-	// Optionally verify chains against current process
-	if currentHandle != 0 && len(results) > 0 {
-		fmt.Println("\nVerifying chains against current process...")
-		for i, r := range results {
-			addr, ok := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
-			if ok {
-				val, err := scanner.ReadCurrentValue(addr, currentDT)
-				if err == nil {
-					fmt.Printf("  [%d] OK -> 0x%X = %s\n", i+1, addr, val)
-				} else {
-					fmt.Printf("  [%d] OK -> 0x%X (read error: %v)\n", i+1, addr, err)
-				}
-			} else {
-				fmt.Printf("  [%d] BROKEN (chain invalid in current session)\n", i+1)
-			}
-		}
-	}
+	storeAndPrintResults(results, currentHandle)
 }
 
 func cmdModules() {
