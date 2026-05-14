@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const AppVersion = "1.5.0"
+const AppVersion = "1.9.0"
 
 type LogLevel int
 
