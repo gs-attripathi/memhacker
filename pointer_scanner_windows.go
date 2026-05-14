@@ -16,28 +16,76 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// -----------------------------------------------------------------------
-// PointerMap: sorted (value, addr) pairs — saved to / loaded from a file
-// -----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
 
-const pmapMagic = uint32(0x504D4150) // "PMAP"
-const pmapVersion = uint32(1)
+const pmapMagic   = uint32(0x504D4150) // "PMAP"
+const pmapVersion = uint32(2)
 
 type ptrEntry struct {
-	value uintptr // what this address points to
-	addr  uintptr // the address that holds that value
+	value uintptr // what is stored at addr (the pointer value)
+	addr  uintptr // memory location that holds this value
 }
 
 type PointerMap struct {
-	Entries    []ptrEntry
+	Entries    []ptrEntry // sorted ascending by .value
 	Modules    []ModuleInfo
 	CreatedAt  time.Time
 	PID        uint32
-	TargetAddr uintptr
-	Is32Bit    bool // true if this was built from a 32-bit process
+	TargetAddr uintptr // address we want to reach via pointer chain
+	Is32Bit    bool
 }
 
-// Save writes the pointer map to a binary file.
+type PointerScanSession struct {
+	PMap       *PointerMap
+	Label      string
+}
+
+type PointerChain struct {
+	BaseModule string
+	BaseOffset uintptr   // offset from module base to the static pointer
+	Offsets    []uintptr // chain offsets, each stored as two's-complement (handles negative)
+}
+
+// Key produces a string that uniquely identifies a chain structure.
+// Two chains with the same Key() in different sessions = static pointer found.
+func (c PointerChain) Key() string {
+	s := fmt.Sprintf("%s+%X", c.BaseModule, c.BaseOffset)
+	for _, o := range c.Offsets {
+		s += fmt.Sprintf("|%X", o)
+	}
+	return s
+}
+
+func (c PointerChain) String() string {
+	s := fmt.Sprintf(`"%s"+%X`, c.BaseModule, c.BaseOffset)
+	for _, o := range c.Offsets {
+		signed := int64(o)
+		if signed < 0 {
+			s += fmt.Sprintf(" -> [-%X]", uint64(-signed))
+		} else {
+			s += fmt.Sprintf(" -> [+%X]", o)
+		}
+	}
+	return s
+}
+
+type PointerResult struct {
+	Chain PointerChain
+}
+
+type PointerScanConfig struct {
+	Sessions   []PointerScanSession
+	MaxDepth   int
+	MaxOffset  uintptr
+	MaxResults int // final output cap; 0 = 100 default
+}
+
+// ---------------------------------------------------------------------------
+// Save / Load
+// ---------------------------------------------------------------------------
+
 func (pm *PointerMap) Save(path string) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -45,12 +93,8 @@ func (pm *PointerMap) Save(path string) error {
 	}
 	defer f.Close()
 
-	// Use a large buffered writer
-	bw := bufio.NewWriterSize(f, 8*1024*1024) // 8MB write buffer
-
-	w := func(v interface{}) error {
-		return binary.Write(bw, binary.LittleEndian, v)
-	}
+	bw := bufio.NewWriterSize(f, 8*1024*1024)
+	w := func(v interface{}) { binary.Write(bw, binary.LittleEndian, v) }
 
 	w(pmapMagic)
 	w(pmapVersion)
@@ -58,10 +102,9 @@ func (pm *PointerMap) Save(path string) error {
 	w(pm.CreatedAt.Unix())
 	w(uint64(pm.TargetAddr))
 	is32 := uint8(0)
-	if pm.Is32Bit {
-		is32 = 1
-	}
+	if pm.Is32Bit { is32 = 1 }
 	w(is32)
+
 	w(uint32(len(pm.Modules)))
 	for _, m := range pm.Modules {
 		name := []byte(m.Name)
@@ -71,19 +114,16 @@ func (pm *PointerMap) Save(path string) error {
 		w(m.Size)
 	}
 
-	// Write all entries as one big raw block — massively faster than per-entry writes
 	w(uint64(len(pm.Entries)))
-	entryBuf := make([]byte, len(pm.Entries)*16) // each entry: value(8) + addr(8)
+	buf := make([]byte, len(pm.Entries)*16)
 	for i, e := range pm.Entries {
-		binary.LittleEndian.PutUint64(entryBuf[i*16:], uint64(e.value))
-		binary.LittleEndian.PutUint64(entryBuf[i*16+8:], uint64(e.addr))
+		binary.LittleEndian.PutUint64(buf[i*16:],   uint64(e.value))
+		binary.LittleEndian.PutUint64(buf[i*16+8:], uint64(e.addr))
 	}
-	bw.Write(entryBuf)
-
+	bw.Write(buf)
 	return bw.Flush()
 }
 
-// LoadPointerMap reads a pmap file from disk.
 func LoadPointerMap(path string) (*PointerMap, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -91,19 +131,17 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	}
 	defer f.Close()
 
-	br := bufio.NewReaderSize(f, 8*1024*1024) // 8MB read buffer
-
-	r := func(v interface{}) error {
-		return binary.Read(br, binary.LittleEndian, v)
-	}
+	br := bufio.NewReaderSize(f, 8*1024*1024)
+	r := func(v interface{}) error { return binary.Read(br, binary.LittleEndian, v) }
 
 	var magic, version, pid uint32
 	var ts int64
 	var targetAddr uint64
 	var is32 uint8
+
 	r(&magic)
 	if magic != pmapMagic {
-		return nil, fmt.Errorf("not a valid pmap file (bad magic)")
+		return nil, fmt.Errorf("not a valid pmap file (bad magic 0x%X)", magic)
 	}
 	r(&version)
 	r(&pid)
@@ -123,13 +161,19 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 		var size uint32
 		r(&base)
 		r(&size)
-		mods[i] = ModuleInfo{Name: string(nameBuf), Base: uintptr(base), Size: size}
+		mods[i] = ModuleInfo{
+			Name:     string(nameBuf),
+			Base:     uintptr(base),
+			Size:     size,
+			IsSystem: classifyModule(""),
+		}
+		// re-classify: known system DLLs by name
+		mods[i].IsSystem = isSystemModuleName(mods[i].Name)
 	}
 
 	var entryCount uint64
 	r(&entryCount)
 
-	// Read all entries as one raw block
 	entryBuf := make([]byte, entryCount*16)
 	if _, err := io.ReadFull(br, entryBuf); err != nil {
 		return nil, fmt.Errorf("failed to read entries: %v", err)
@@ -137,7 +181,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	entries := make([]ptrEntry, entryCount)
 	for i := range entries {
 		entries[i].value = uintptr(binary.LittleEndian.Uint64(entryBuf[i*16:]))
-		entries[i].addr = uintptr(binary.LittleEndian.Uint64(entryBuf[i*16+8:]))
+		entries[i].addr  = uintptr(binary.LittleEndian.Uint64(entryBuf[i*16+8:]))
 	}
 
 	return &PointerMap{
@@ -150,30 +194,56 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	}, nil
 }
 
-// -----------------------------------------------------------------------
-// Building the pointer map
-// -----------------------------------------------------------------------
+// isSystemModuleName checks module name (not path) for known system DLL names.
+// Used when loading a pmap where we don't have the full path.
+func isSystemModuleName(name string) bool {
+	systemNames := []string{
+		"ntdll.dll", "kernel32.dll", "kernelbase.dll", "user32.dll",
+		"gdi32.dll", "advapi32.dll", "msvcrt.dll", "ws2_32.dll",
+		"rpcrt4.dll", "ole32.dll", "oleaut32.dll", "shell32.dll",
+		"shlwapi.dll", "comctl32.dll", "comdlg32.dll", "winmm.dll",
+		"imm32.dll", "msctf.dll", "uxtheme.dll", "dwmapi.dll",
+		"sechost.dll", "bcryptprimitives.dll", "clbcatq.dll",
+		"cfgmgr32.dll", "win32u.dll", "gdi32full.dll", "msvcp_win.dll",
+		"ucrtbase.dll", "combase.dll", "shcore.dll", "wintypes.dll",
+	}
+	lower := name
+	for i := range lower {
+		if lower[i] >= 'A' && lower[i] <= 'Z' {
+			lower = lower[:i] + string(lower[i]+32) + lower[i+1:]
+		}
+	}
+	for _, s := range systemNames {
+		if lower == s {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Build pointer map
+// ---------------------------------------------------------------------------
 
 func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is32Bit bool) (*PointerMap, error) {
 	Log.Info("BuildPointerMap: starting, %d modules, is32Bit=%v", len(modules), is32Bit)
+
 	ptrSz := 8
-	if is32Bit {
-		ptrSz = 4
-	}
 	maxUserAddr := uintptr(0x7FFFFFFFFFFF)
 	if is32Bit {
+		ptrSz = 4
 		maxUserAddr = uintptr(0x7FFFFFFF)
 	}
+
 	regions := EnumMemoryRegions(handle, false)
 	Log.Debug("BuildPointerMap: %d readable regions", len(regions))
 
-	// build valid address range set for fast lookup
+	// Build sorted range list for O(log n) valid-address checks
 	type addrRange struct{ lo, hi uintptr }
 	ranges := make([]addrRange, len(regions))
 	for i, r := range regions {
 		ranges[i] = addrRange{r.BaseAddress, r.BaseAddress + r.RegionSize}
 	}
-	// sort ranges for binary search
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].lo < ranges[j].lo })
 
 	isValidAddr := func(v uintptr) bool {
@@ -183,11 +253,12 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is
 		lo, hi := 0, len(ranges)-1
 		for lo <= hi {
 			mid := (lo + hi) / 2
-			if v < ranges[mid].lo {
+			switch {
+			case v < ranges[mid].lo:
 				hi = mid - 1
-			} else if v >= ranges[mid].hi {
+			case v >= ranges[mid].hi:
 				lo = mid + 1
-			} else {
+			default:
 				return true
 			}
 		}
@@ -205,43 +276,42 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is
 	var wg sync.WaitGroup
 	for i := 0; i < numCPU; i++ {
 		wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for r := range jobs {
-					// align start to ptrSz bytes
-					start := r.BaseAddress
-					if start%uintptr(ptrSz) != 0 {
-						start += uintptr(ptrSz) - (start % uintptr(ptrSz))
+		go func() {
+			defer wg.Done()
+			for r := range jobs {
+				start := r.BaseAddress
+				if rem := start % uintptr(ptrSz); rem != 0 {
+					start += uintptr(ptrSz) - rem
+				}
+				size := int(r.RegionSize)
+				if size < ptrSz {
+					continue
+				}
+				data, err := ReadMemory(handle, r.BaseAddress, size)
+				if err != nil || len(data) < ptrSz {
+					continue
+				}
+				offset := int(start - r.BaseAddress)
+				var local []ptrEntry
+				for i := offset; i+ptrSz <= len(data); i += ptrSz {
+					var v uintptr
+					if ptrSz == 4 {
+						v = uintptr(binary.LittleEndian.Uint32(data[i : i+4]))
+					} else {
+						v = uintptr(binary.LittleEndian.Uint64(data[i : i+8]))
 					}
-					size := int(r.RegionSize)
-					if size < ptrSz {
-						continue
-					}
-					data, err := ReadMemory(handle, r.BaseAddress, size)
-					if err != nil || len(data) < ptrSz {
-						continue
-					}
-					offset := int(start - r.BaseAddress)
-					var local []ptrEntry
-					for i := offset; i+ptrSz <= len(data); i += ptrSz {
-						var v uintptr
-						if ptrSz == 4 {
-							v = uintptr(binary.LittleEndian.Uint32(data[i : i+4]))
-						} else {
-							v = uintptr(binary.LittleEndian.Uint64(data[i : i+8]))
-						}
-						if isValidAddr(v) {
-							local = append(local, ptrEntry{
-								value: v,
-								addr:  r.BaseAddress + uintptr(i),
-							})
-						}
-					}
-					if len(local) > 0 {
-						resultChan <- local
+					if isValidAddr(v) {
+						local = append(local, ptrEntry{
+							value: v,
+							addr:  r.BaseAddress + uintptr(i),
+						})
 					}
 				}
-			}()
+				if len(local) > 0 {
+					resultChan <- local
+				}
+			}
+		}()
 	}
 	go func() { wg.Wait(); close(resultChan) }()
 
@@ -252,207 +322,66 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is
 		all = append(all, batch...)
 		done++
 		if done%50 == 0 || done == total {
-			fmt.Printf("\r  scanning regions... %d/%d (%d pointers found)", done, total, len(all))
+			fmt.Printf("\r  scanning regions... %d/%d (%d pointers found)  ", done, total, len(all))
 		}
 	}
 	fmt.Println()
 
-	// sort by value for binary search during scan
+	// Sort by value — required for binary-search lookups
 	sort.Slice(all, func(i, j int) bool { return all[i].value < all[j].value })
 
-	pm := &PointerMap{
+	Log.Info("BuildPointerMap: done, %d entries", len(all))
+	return &PointerMap{
 		Entries:   all,
 		Modules:   modules,
 		CreatedAt: time.Now(),
 		PID:       pid,
 		Is32Bit:   is32Bit,
-	}
-	Log.Info("BuildPointerMap: done, %d pointer entries", len(all))
-	return pm, nil
+	}, nil
 }
 
-// FindPointersTo returns all entries whose .value is in [target, target+maxOffset].
-func (pm *PointerMap) FindPointersTo(target uintptr, maxOffset uintptr) []ptrEntry {
-	lo := sort.Search(len(pm.Entries), func(i int) bool {
-		return pm.Entries[i].value >= target
-	})
-	hi := sort.Search(len(pm.Entries), func(i int) bool {
-		return pm.Entries[i].value > target+maxOffset
-	})
-	return pm.Entries[lo:hi]
-}
-
-// -----------------------------------------------------------------------
-// PointerScanSession: one (target address, pointer map) pair
-// -----------------------------------------------------------------------
-
-type PointerScanSession struct {
-	TargetAddr uintptr
-	PMap       *PointerMap
-	Label      string // e.g. "session1.pmap"
-}
-
-// -----------------------------------------------------------------------
-// PointerChain: the result of a scan — module+offset + slice of offsets
-// -----------------------------------------------------------------------
-
-type PointerChain struct {
-	BaseModule string
-	BaseOffset uintptr
-	Offsets    []uintptr
-}
-
-func (c PointerChain) Key() string {
-	s := fmt.Sprintf("%s+%X", c.BaseModule, c.BaseOffset)
-	for _, o := range c.Offsets {
-		s += fmt.Sprintf("|%X", o)
-	}
-	return s
-}
-
-func (c PointerChain) String() string {
-	s := fmt.Sprintf(`"%s"+%X`, c.BaseModule, c.BaseOffset)
-	for _, o := range c.Offsets {
-		// treat as signed — if top bit set it's negative
-		signed := int64(o)
-		if signed < 0 {
-			s += fmt.Sprintf(" -> [-%X]", uint64(-signed))
-		} else {
-			s += fmt.Sprintf(" -> [+%X]", o)
-		}
-	}
-	return s
-}
-
-// PointerResult as returned to the user
-type PointerResult struct {
-	Chain PointerChain
-}
-
-// -----------------------------------------------------------------------
-// BFS pointer scan — supports multiple sessions (cross-reference)
-// -----------------------------------------------------------------------
-
-type PointerScanConfig struct {
-	Sessions   []PointerScanSession
-	MaxDepth   int
-	MaxOffset  uintptr
-	MaxResults int
-}
-
-// MultiSessionPointerScan finds pointer chains that resolve correctly
-// across ALL provided sessions.
-func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
-	if len(cfg.Sessions) == 0 {
+// findInRange returns all entries with value in [lo, hi] using binary search.
+func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
+	if lo > hi {
 		return nil
 	}
-
-	// Warn about duplicate sessions
-	seen := map[string]bool{}
-	for _, s := range cfg.Sessions {
-		key := fmt.Sprintf("%s_%X", s.Label, s.TargetAddr)
-		if seen[key] {
-			fmt.Printf("  [WARN] Duplicate session detected: %s target=0x%X — remove it with pmclear and re-add\n", s.Label, s.TargetAddr)
-		}
-		seen[key] = true
-	}
-
-	Log.Info("MultiSessionPointerScan: %d sessions, depth=%d, maxOffset=0x%X, maxResults=%d",
-		len(cfg.Sessions), cfg.MaxDepth, cfg.MaxOffset, cfg.MaxResults)
-
-	// Run BFS for each session independently — no per-session cap, collect all chains
-	type sessionChains struct {
-		chains map[string]PointerChain
-	}
-	allSessionChains := make([]sessionChains, len(cfg.Sessions))
-	var wg sync.WaitGroup
-
-	for i, sess := range cfg.Sessions {
-		wg.Add(1)
-		go func(idx int, s PointerScanSession) {
-			defer wg.Done()
-			Log.Info("  Session[%d] %s: scanning from 0x%X", idx, s.Label, s.TargetAddr)
-			// No cap on per-session results — collect everything, cross-reference will filter
-			chains := bfsSingleSession(s.PMap, s.TargetAddr, cfg.MaxDepth, cfg.MaxOffset, 0)
-			m := make(map[string]PointerChain, len(chains))
-			for _, c := range chains {
-				m[c.Key()] = c
-			}
-			allSessionChains[idx] = sessionChains{chains: m}
-			Log.Info("  Session[%d] %s: found %d chains", idx, s.Label, len(chains))
-		}(i, sess)
-	}
-	wg.Wait()
-
-	// Cross-reference: keep only chains present in ALL sessions
-	candidates := allSessionChains[0].chains
-	for i := 1; i < len(allSessionChains); i++ {
-		next := make(map[string]PointerChain)
-		for key, chain := range candidates {
-			if _, ok := allSessionChains[i].chains[key]; ok {
-				next[key] = chain
-			}
-		}
-		candidates = next
-	}
-
-	var results []PointerResult
-	for _, c := range candidates {
-		results = append(results, PointerResult{Chain: c})
-	}
-
-	// Sort by chain length then base offset
-	sort.Slice(results, func(i, j int) bool {
-		ci, cj := results[i].Chain, results[j].Chain
-		if len(ci.Offsets) != len(cj.Offsets) {
-			return len(ci.Offsets) < len(cj.Offsets)
-		}
-		return ci.BaseOffset < cj.BaseOffset
-	})
-
-	// Apply maxResults only to final output
-	if cfg.MaxResults > 0 && len(results) > cfg.MaxResults {
-		results = results[:cfg.MaxResults]
-	}
-
-	Log.Info("MultiSessionPointerScan: %d chains survive cross-reference", len(results))
-	return results
+	i := sort.Search(len(pm.Entries), func(k int) bool { return pm.Entries[k].value >= lo })
+	j := sort.Search(len(pm.Entries), func(k int) bool { return pm.Entries[k].value > hi })
+	return pm.Entries[i:j]
 }
 
-// bfsSingleSession does BFS backward from target using one pmap.
-// maxResults=0 means no cap.
-const maxQueuePerDepth = 500_000 // prevent BFS explosion
+// ---------------------------------------------------------------------------
+// BFS pointer scan — single session
+// ---------------------------------------------------------------------------
 
-func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, maxResults int) []PointerChain {
+// bfsSingleSession performs backward BFS from target through the pointer map.
+// It returns all pointer chains anchored at a non-system module (static address).
+// hardCap limits how many chains are collected per session to prevent OOM.
+const bfsHardCap    = 2_000_000 // max chains collected per session
+const bfsQueueCap   = 300_000   // max BFS queue size per depth level
+
+func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr) []PointerChain {
 	type qItem struct {
-		targetAddr uintptr
-		offsets    []uintptr // chain so far (innermost offset first)
+		addr    uintptr   // memory address to look backwards from
+		offsets []uintptr // chain offsets built so far (innermost first)
 	}
 
-	var results []PointerChain
-	var mu sync.Mutex
+	var (
+		results []PointerChain
+		mu      sync.Mutex
+	)
 
-	queue := []qItem{{targetAddr: target}}
+	queue := []qItem{{addr: target}}
 
-	for depth := 0; depth < maxDepth; depth++ {
-		if len(queue) == 0 {
-			break
-		}
-		// maxResults=0 means no cap
-		if maxResults > 0 && len(results) >= maxResults {
-			break
-		}
-
-		fmt.Printf("  [depth %d/%d] queue=%d found=%d...\n", depth+1, maxDepth, len(queue), len(results))
+	for depth := 0; depth < maxDepth && len(queue) > 0; depth++ {
+		fmt.Printf("    depth %d/%d — queue=%d chains=%d\n", depth+1, maxDepth, len(queue), len(results))
 
 		var nextQueue []qItem
-		var nextMu sync.Mutex
+		var nextMu   sync.Mutex
 
 		numCPU := runtime.NumCPU()
-		jobs := make(chan qItem, len(queue))
-		for _, q := range queue {
-			jobs <- q
-		}
+		jobs    := make(chan qItem, len(queue))
+		for _, q := range queue { jobs <- q }
 		close(jobs)
 
 		var wg sync.WaitGroup
@@ -461,55 +390,44 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 			go func() {
 				defer wg.Done()
 				for item := range jobs {
-					// scan range: [targetAddr - maxOffset, targetAddr + maxOffset]
-					scanFrom := uintptr(0)
-					if item.targetAddr > maxOffset {
-						scanFrom = item.targetAddr - maxOffset
+					// Search for entries whose value is within maxOffset of item.addr
+					// Both directions: item.addr - maxOffset  to  item.addr + maxOffset
+					scanLo := uintptr(0)
+					if item.addr > maxOffset {
+						scanLo = item.addr - maxOffset
 					}
-					scanRange := (item.targetAddr - scanFrom) + maxOffset // covers both directions
-					ptrs := pm.FindPointersTo(scanFrom, scanRange)
+					scanHi := item.addr + maxOffset
 
+					ptrs := pm.findInRange(scanLo, scanHi)
 					for _, p := range ptrs {
-						// compute signed difference
-						var offset uintptr
-						if p.value <= item.targetAddr {
-							offset = item.targetAddr - p.value
-						} else {
-							diff := p.value - item.targetAddr
-							if diff > maxOffset {
-								continue // too far in positive direction
-							}
-							// store as two's-complement negative
-							offset = uintptr(^diff + 1)
-						}
-						// also skip positive offsets beyond maxOffset
-						if p.value <= item.targetAddr && offset > maxOffset {
-							continue
-						}
+						// Compute offset = item.addr - p.value (may be negative → two's complement)
+						offset := item.addr - p.value // works correctly for both signs in uintptr arithmetic
 
+						// Build new chain: prepend this offset
 						newOffsets := make([]uintptr, len(item.offsets)+1)
 						newOffsets[0] = offset
 						copy(newOffsets[1:], item.offsets)
 
-						// Is this pointer inside a module (static)?
-					if mod := findModuleByAddr(pm.Modules, p.addr); mod != nil {
-						mu.Lock()
-						// maxResults=0 means no cap
-						if maxResults == 0 || len(results) < maxResults {
-							results = append(results, PointerChain{
-								BaseModule: mod.Name,
-								BaseOffset: p.addr - mod.Base,
-								Offsets:    newOffsets,
-							})
-						}
-						mu.Unlock()
+						if mod := findStaticModule(pm.Modules, p.addr); mod != nil {
+							// p.addr is inside a non-system module → static pointer found
+							mu.Lock()
+							if len(results) < bfsHardCap {
+								results = append(results, PointerChain{
+									BaseModule: mod.Name,
+									BaseOffset: p.addr - mod.Base,
+									Offsets:    newOffsets,
+								})
+							}
+							mu.Unlock()
 						} else {
-							// Not static yet — keep going deeper
+							// Not static yet — add to next BFS level
 							nextMu.Lock()
-							nextQueue = append(nextQueue, qItem{
-								targetAddr: p.addr,
-								offsets:    newOffsets,
-							})
+							if len(nextQueue) < bfsQueueCap {
+								nextQueue = append(nextQueue, qItem{
+									addr:    p.addr,
+									offsets: newOffsets,
+								})
+							}
 							nextMu.Unlock()
 						}
 					}
@@ -517,23 +435,21 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 			}()
 		}
 		wg.Wait()
-		fmt.Printf("  [depth %d/%d] done — found %d chains so far, next queue=%d\n", depth+1, maxDepth, len(results), len(nextQueue))
 
-		// Cap queue to prevent explosion
-		if len(nextQueue) > maxQueuePerDepth {
-			fmt.Printf("  [WARN] queue capped at %d (was %d) — increase depth or reduce offset for better results\n", maxQueuePerDepth, len(nextQueue))
-			nextQueue = nextQueue[:maxQueuePerDepth]
+		if len(nextQueue) >= bfsQueueCap {
+			fmt.Printf("    [WARN] queue capped at %d — reduce offset or depth if too slow\n", bfsQueueCap)
 		}
 		queue = nextQueue
 	}
+
 	return results
 }
 
-func findModuleByAddr(modules []ModuleInfo, addr uintptr) *ModuleInfo {
+// findStaticModule returns the module containing addr, or nil if system/not found.
+func findStaticModule(modules []ModuleInfo, addr uintptr) *ModuleInfo {
 	for i := range modules {
 		m := &modules[i]
 		if addr >= m.Base && addr < m.Base+uintptr(m.Size) {
-			// skip system DLLs as base — static ptr inside kernel32 etc is useless
 			if m.IsSystem {
 				return nil
 			}
@@ -543,8 +459,91 @@ func findModuleByAddr(modules []ModuleInfo, addr uintptr) *ModuleInfo {
 	return nil
 }
 
-// VerifyChain follows a chain and returns the final address.
-// modules = current session's modules (to resolve base).
+// ---------------------------------------------------------------------------
+// Multi-session pointer scan
+// ---------------------------------------------------------------------------
+
+func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
+	if len(cfg.Sessions) == 0 {
+		return nil
+	}
+
+	maxResults := cfg.MaxResults
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+
+	// Warn on duplicate sessions
+	seen := map[string]bool{}
+	for _, s := range cfg.Sessions {
+		key := fmt.Sprintf("%s_%X", s.Label, s.PMap.TargetAddr)
+		if seen[key] {
+			fmt.Printf("  [WARN] Duplicate session: %s target=0x%X\n", s.Label, s.PMap.TargetAddr)
+		}
+		seen[key] = true
+	}
+
+	Log.Info("MultiSessionPointerScan: %d sessions depth=%d offset=0x%X maxResults=%d",
+		len(cfg.Sessions), cfg.MaxDepth, cfg.MaxOffset, maxResults)
+
+	// Run BFS on each session SEQUENTIALLY for clean output
+	allChains := make([]map[string]PointerChain, len(cfg.Sessions))
+
+	for idx, sess := range cfg.Sessions {
+		fmt.Printf("  Session [%d/%d] %s target=0x%X (%d entries)\n",
+			idx+1, len(cfg.Sessions), sess.Label, sess.PMap.TargetAddr, len(sess.PMap.Entries))
+		Log.Info("  Session[%d] %s: BFS start target=0x%X", idx, sess.Label, sess.PMap.TargetAddr)
+
+		chains := bfsSingleSession(sess.PMap, sess.PMap.TargetAddr, cfg.MaxDepth, cfg.MaxOffset)
+
+		m := make(map[string]PointerChain, len(chains))
+		for _, c := range chains {
+			m[c.Key()] = c
+		}
+		allChains[idx] = m
+		fmt.Printf("    => %d chains found\n", len(chains))
+		Log.Info("  Session[%d] %s: found %d chains", idx, sess.Label, len(chains))
+	}
+
+	// Cross-reference: keep only chains present in EVERY session
+	candidates := allChains[0]
+	for i := 1; i < len(allChains); i++ {
+		filtered := make(map[string]PointerChain)
+		for key, chain := range candidates {
+			if _, ok := allChains[i][key]; ok {
+				filtered[key] = chain
+			}
+		}
+		candidates = filtered
+		fmt.Printf("  After cross-ref with session %d: %d candidates\n", i+1, len(candidates))
+	}
+
+	var results []PointerResult
+	for _, c := range candidates {
+		results = append(results, PointerResult{Chain: c})
+	}
+
+	// Sort: shorter chains first, then by base offset
+	sort.Slice(results, func(i, j int) bool {
+		ci, cj := results[i].Chain, results[j].Chain
+		if len(ci.Offsets) != len(cj.Offsets) {
+			return len(ci.Offsets) < len(cj.Offsets)
+		}
+		return ci.BaseOffset < cj.BaseOffset
+	})
+
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
+
+	Log.Info("MultiSessionPointerScan: %d chains after cross-reference", len(results))
+	return results
+}
+
+// ---------------------------------------------------------------------------
+// Verify a chain against the live process
+// ---------------------------------------------------------------------------
+
 func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain, is32Bit bool) (uintptr, bool) {
 	var base uintptr
 	for _, m := range modules {
@@ -556,23 +555,26 @@ func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain
 	if base == 0 {
 		return 0, false
 	}
+
 	addr := base + chain.BaseOffset
 	for _, offset := range chain.Offsets {
 		var ptr uintptr
-		var err error
 		if is32Bit {
-			buf, e := ReadMemory(handle, addr, 4)
-			if e != nil || len(buf) < 4 {
+			buf, err := ReadMemory(handle, addr, 4)
+			if err != nil || len(buf) < 4 {
 				return 0, false
 			}
 			ptr = uintptr(binary.LittleEndian.Uint32(buf))
 		} else {
+			var err error
 			ptr, err = ReadPointer(handle, addr)
-			if err != nil || ptr == 0 {
+			if err != nil {
 				return 0, false
 			}
 		}
-		// offset stored as two's complement — works for both signs
+		if ptr == 0 {
+			return 0, false
+		}
 		addr = ptr + offset
 	}
 	return addr, true

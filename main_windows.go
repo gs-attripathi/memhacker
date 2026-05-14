@@ -742,7 +742,7 @@ func cmdPmapSave(args []string) {
 
 	// Register as session
 	pscanSessions = append(pscanSessions, PointerScanSession{
-		TargetAddr: targetAddr,
+		
 		PMap:       pointerMap,
 		Label:      path,
 	})
@@ -779,7 +779,7 @@ func cmdPmapLoad(args []string) {
 		}
 	}
 	pscanSessions = append(pscanSessions, PointerScanSession{
-		TargetAddr: pm.TargetAddr,
+		
 		PMap:       pm,
 		Label:      args[0],
 	})
@@ -799,7 +799,7 @@ func cmdPmapSessions() {
 	fmt.Printf("%-4s  %-14s  %-40s  %s\n", "#", "Target Addr", "File", "Entries")
 	fmt.Println(strings.Repeat("-", 75))
 	for i, s := range pscanSessions {
-		fmt.Printf("%-4d  0x%-12X  %-40s  %d\n", i+1, s.TargetAddr, s.Label, len(s.PMap.Entries))
+		fmt.Printf("%-4d  0x%-12X  %-40s  %d\n", i+1, s.PMap.TargetAddr, s.Label, len(s.PMap.Entries))
 	}
 }
 
@@ -849,7 +849,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d\n",
 		len(pscanSessions), depth, maxOffset, maxResults)
 	for i, s := range pscanSessions {
-		fmt.Printf("  [%d] %s -> target=0x%X (%d pmap entries)\n", i+1, s.Label, s.TargetAddr, len(s.PMap.Entries))
+		fmt.Printf("  [%d] %s -> target=0x%X (%d pmap entries)\n", i+1, s.Label, s.PMap.TargetAddr, len(s.PMap.Entries))
 	}
 
 	start := time.Now()
