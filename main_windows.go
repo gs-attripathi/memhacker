@@ -162,11 +162,12 @@ FREEZING
   unfreeze <id>                  - unfreeze by ID
   frozen                         - show frozen entries
 
-POINTER SCANNING
-  pmap                   - build pointer map (required before pscan)
+POINTER SCANNING (CE-style)
+  pmap                   - manually build pointer map (auto-built by pscan if missing)
   pscan <addr> [depth] [offset] [max_results]
-                         - pointer scan for address
+                         - pointer scan for address (pmap auto-built if needed)
                            defaults: depth=5 offset=2048 max=100
+                           example:  pscan 0x1A2B3C4D 7 4096 200
 `)
 }
 
@@ -224,6 +225,7 @@ func cmdOpen(args []string) {
 	currentPID = uint32(pid)
 	scanner = NewMemoryScanner(h)
 	freezer = NewFreezer(h)
+	pointerMap = nil // invalidate stale pmap from previous session
 
 	mods, _ := GetModules(uint32(pid))
 	currentModules = mods
@@ -667,13 +669,18 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		fmt.Println("Not attached")
 		return
 	}
-	if pointerMap == nil {
-		fmt.Println("No pointer map. Run 'pmap' first")
-		return
-	}
 	if len(args) == 0 {
 		fmt.Println("Usage: pscan <addr_hex> [depth] [max_offset] [max_results]")
 		return
+	}
+	// Auto-build pointer map if not built yet
+	if pointerMap == nil {
+		fmt.Println("Pointer map not built yet — building it now...")
+		cmdBuildPointerMap()
+		if pointerMap == nil {
+			fmt.Println("Failed to build pointer map, aborting")
+			return
+		}
 	}
 	addr, err := parseAddr(args[0])
 	if err != nil {
