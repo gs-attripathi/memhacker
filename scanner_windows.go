@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
 	"runtime"
+	"sort"
 	"sync"
 	"unsafe"
 
@@ -272,36 +274,63 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	for i := 0; i < numCPU; i++ {
 		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			for r := range jobs {
-				data, err := ReadMemory(ms.handle, r.BaseAddress, int(r.RegionSize))
-				if err != nil || len(data) == 0 {
-					continue
-				}
-				sz := dataTypeSize(params.DT)
-				if params.DT == TypeString || params.DT == TypeBytes {
-					sz = len(params.Value)
-				}
-				if sz == 0 {
-					continue
-				}
-				var local []ScanResult
-				for i := 0; i <= len(data)-sz; i++ {
-					chunk := data[i : i+sz]
-					if compareValues(params.DT, nil, chunk, params.Value, params.Value2, params.ST, params.Tolerance) {
-						cp := make([]byte, sz)
-						copy(cp, chunk)
-						local = append(local, ScanResult{
-							Address: r.BaseAddress + uintptr(i),
-							Value:   cp,
-						})
+				defer wg.Done()
+				for r := range jobs {
+					data, err := ReadMemory(ms.handle, r.BaseAddress, int(r.RegionSize))
+					if err != nil || len(data) == 0 {
+						continue
+					}
+					sz := dataTypeSize(params.DT)
+					if params.DT == TypeString || params.DT == TypeBytes {
+						sz = len(params.Value)
+					}
+					if sz == 0 {
+						continue
+					}
+
+					var local []ScanResult
+
+					// Fast path: exact scan uses bytes.Index (SIMD-accelerated in Go runtime)
+					if params.ST == ScanExact && len(params.Value) == sz {
+						needle := params.Value[:sz]
+						searchIn := data
+						offset := 0
+						for {
+							idx := bytes.Index(searchIn, needle)
+							if idx < 0 {
+								break
+							}
+							cp := make([]byte, sz)
+							copy(cp, needle)
+							local = append(local, ScanResult{
+								Address: r.BaseAddress + uintptr(offset+idx),
+								Value:   cp,
+							})
+							advance := idx + 1
+							offset += advance
+							searchIn = searchIn[advance:]
+						}
+					} else {
+						// General path for all other scan types
+						local = make([]ScanResult, 0, 64)
+						for i := 0; i <= len(data)-sz; i++ {
+							chunk := data[i : i+sz]
+							if compareValues(params.DT, nil, chunk, params.Value, params.Value2, params.ST, params.Tolerance) {
+								cp := make([]byte, sz)
+								copy(cp, chunk)
+								local = append(local, ScanResult{
+									Address: r.BaseAddress + uintptr(i),
+									Value:   cp,
+								})
+							}
+						}
+					}
+
+					if len(local) > 0 {
+						resultChan <- local
 					}
 				}
-				if len(local) > 0 {
-					resultChan <- local
-				}
-			}
-		}()
+			}()
 	}
 
 	go func() {
@@ -324,46 +353,90 @@ func (ms *MemoryScanner) NextScan(params ScanParams) int {
 		return 0
 	}
 	Log.Info("NextScan: filtering %d results, scan=%d", len(ms.Results), params.ST)
-	numCPU := runtime.NumCPU()
-	batchSize := (len(ms.Results) + numCPU - 1) / numCPU
 
-	type result struct {
-		idx  int
-		keep bool
-		val  []byte
+	sz := dataTypeSize(params.DT)
+	if params.DT == TypeString || params.DT == TypeBytes {
+		sz = len(params.Value)
 	}
-	resultChan := make(chan result, len(ms.Results))
+
+	// Group results by memory region to minimize ReadMemory syscalls
+	// Sort by address, then read a whole region at once and check all addresses in it
+	sorted := make([]int, len(ms.Results))
+	for i := range sorted {
+		sorted[i] = i
+	}
+	sort.Slice(sorted, func(a, b int) bool {
+		return ms.Results[sorted[a]].Address < ms.Results[sorted[b]].Address
+	})
+
+	numCPU := runtime.NumCPU()
+	batchSize := (len(sorted) + numCPU - 1) / numCPU
+
+	type keepEntry struct {
+		idx int
+		val []byte
+	}
+	resultChan := make(chan keepEntry, len(ms.Results))
 
 	var wg sync.WaitGroup
-	for i := 0; i < numCPU; i++ {
-		start := i * batchSize
+	for w := 0; w < numCPU; w++ {
+		start := w * batchSize
 		end := start + batchSize
-		if end > len(ms.Results) {
-			end = len(ms.Results)
+		if end > len(sorted) {
+			end = len(sorted)
 		}
 		if start >= end {
 			continue
 		}
 		wg.Add(1)
-		go func(start, end int) {
+		go func(indices []int) {
 			defer wg.Done()
-			sz := dataTypeSize(params.DT)
-			if params.DT == TypeString || params.DT == TypeBytes {
-				sz = len(params.Value)
-			}
-			for idx := start; idx < end; idx++ {
+
+			// Try to batch-read a region covering consecutive addresses
+			var regionData []byte
+			var regionBase uintptr
+
+			for _, idx := range indices {
 				r := ms.Results[idx]
-				newVal, err := ReadMemory(ms.handle, r.Address, sz)
-				if err != nil || len(newVal) < sz {
-					resultChan <- result{idx: idx, keep: false}
+
+				// Check if this address is within our cached region
+				if regionData != nil && r.Address >= regionBase && int(r.Address-regionBase)+sz <= len(regionData) {
+					// Use cached region data
+					offset := int(r.Address - regionBase)
+					newVal := regionData[offset : offset+sz]
+					keep := compareValues(params.DT, r.Value, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
+					if keep {
+						cp := make([]byte, sz)
+						copy(cp, newVal)
+						resultChan <- keepEntry{idx: idx, val: cp}
+					}
 					continue
 				}
+
+				// Read a chunk covering this address + next ~64KB to amortize syscall cost
+				const chunkSize = 64 * 1024
+				data, err := ReadMemory(ms.handle, r.Address, chunkSize)
+				if err != nil || len(data) < sz {
+					// Fallback: read just this address
+					data, err = ReadMemory(ms.handle, r.Address, sz)
+					if err != nil || len(data) < sz {
+						continue
+					}
+					regionData = nil
+				} else {
+					regionData = data
+					regionBase = r.Address
+				}
+
+				newVal := data[:sz]
 				keep := compareValues(params.DT, r.Value, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
-				cp := make([]byte, len(newVal))
-				copy(cp, newVal)
-				resultChan <- result{idx: idx, keep: keep, val: cp}
+				if keep {
+					cp := make([]byte, sz)
+					copy(cp, newVal)
+					resultChan <- keepEntry{idx: idx, val: cp}
+				}
 			}
-		}(start, end)
+		}(sorted[start:end])
 	}
 
 	go func() {
@@ -371,20 +444,15 @@ func (ms *MemoryScanner) NextScan(params ScanParams) int {
 		close(resultChan)
 	}()
 
-	type keepEntry struct {
-		val []byte
-	}
-	keeps := make(map[int]keepEntry, len(ms.Results))
-	for r := range resultChan {
-		if r.keep {
-			keeps[r.idx] = keepEntry{val: r.val}
-		}
+	keeps := make(map[int][]byte, len(ms.Results))
+	for k := range resultChan {
+		keeps[k.idx] = k.val
 	}
 
 	var filtered []ScanResult
 	for i, r := range ms.Results {
-		if k, ok := keeps[i]; ok {
-			r.Value = k.val
+		if val, ok := keeps[i]; ok {
+			r.Value = val
 			filtered = append(filtered, r)
 		}
 	}
