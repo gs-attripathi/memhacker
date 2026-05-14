@@ -795,16 +795,18 @@ func cmdPmapSave(args []string) {
 		return
 	}
 
-	// Register as session
+	// Register as session — store a reference to current pmap
+	// Then nil out pointerMap so next pmsave builds a fresh one
+	savedPmap := pointerMap
 	pscanSessions = append(pscanSessions, PointerScanSession{
-		
-		PMap:       pointerMap,
-		Label:      path,
+		PMap:  savedPmap,
+		Label: path,
 	})
+	pointerMap = nil // force fresh pmap on next pmsave
 
 	Log.Info("pmsave: saved %s, target=0x%X, session count=%d", path, targetAddr, len(pscanSessions))
 	fmt.Printf("Saved %s (%d entries) | target=0x%X | session #%d registered\n",
-		path, len(pointerMap.Entries), targetAddr, len(pscanSessions))
+		path, len(savedPmap.Entries), targetAddr, len(pscanSessions))
 }
 
 // pmload <file>
