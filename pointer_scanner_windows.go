@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -37,8 +38,6 @@ type PointerMap struct {
 }
 
 // Save writes the pointer map to a binary file.
-// Format: magic(4) version(4) pid(4) time_unix(8) mod_count(4) [name_len(2) name mod_base(8) mod_size(4)]...
-//         entry_count(8) [value(8) addr(8)]...
 func (pm *PointerMap) Save(path string) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -46,8 +45,11 @@ func (pm *PointerMap) Save(path string) error {
 	}
 	defer f.Close()
 
+	// Use a large buffered writer
+	bw := bufio.NewWriterSize(f, 8*1024*1024) // 8MB write buffer
+
 	w := func(v interface{}) error {
-		return binary.Write(f, binary.LittleEndian, v)
+		return binary.Write(bw, binary.LittleEndian, v)
 	}
 
 	w(pmapMagic)
@@ -64,16 +66,21 @@ func (pm *PointerMap) Save(path string) error {
 	for _, m := range pm.Modules {
 		name := []byte(m.Name)
 		w(uint16(len(name)))
-		f.Write(name)
+		bw.Write(name)
 		w(uint64(m.Base))
 		w(m.Size)
 	}
+
+	// Write all entries as one big raw block — massively faster than per-entry writes
 	w(uint64(len(pm.Entries)))
-	for _, e := range pm.Entries {
-		w(uint64(e.value))
-		w(uint64(e.addr))
+	entryBuf := make([]byte, len(pm.Entries)*16) // each entry: value(8) + addr(8)
+	for i, e := range pm.Entries {
+		binary.LittleEndian.PutUint64(entryBuf[i*16:], uint64(e.value))
+		binary.LittleEndian.PutUint64(entryBuf[i*16+8:], uint64(e.addr))
 	}
-	return nil
+	bw.Write(entryBuf)
+
+	return bw.Flush()
 }
 
 // LoadPointerMap reads a pmap file from disk.
@@ -84,8 +91,10 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	}
 	defer f.Close()
 
+	br := bufio.NewReaderSize(f, 8*1024*1024) // 8MB read buffer
+
 	r := func(v interface{}) error {
-		return binary.Read(f, binary.LittleEndian, v)
+		return binary.Read(br, binary.LittleEndian, v)
 	}
 
 	var magic, version, pid uint32
@@ -109,7 +118,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 		var nlen uint16
 		r(&nlen)
 		nameBuf := make([]byte, nlen)
-		io.ReadFull(f, nameBuf)
+		io.ReadFull(br, nameBuf)
 		var base uint64
 		var size uint32
 		r(&base)
@@ -119,12 +128,16 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 
 	var entryCount uint64
 	r(&entryCount)
+
+	// Read all entries as one raw block
+	entryBuf := make([]byte, entryCount*16)
+	if _, err := io.ReadFull(br, entryBuf); err != nil {
+		return nil, fmt.Errorf("failed to read entries: %v", err)
+	}
 	entries := make([]ptrEntry, entryCount)
 	for i := range entries {
-		var v, a uint64
-		r(&v)
-		r(&a)
-		entries[i] = ptrEntry{value: uintptr(v), addr: uintptr(a)}
+		entries[i].value = uintptr(binary.LittleEndian.Uint64(entryBuf[i*16:]))
+		entries[i].addr = uintptr(binary.LittleEndian.Uint64(entryBuf[i*16+8:]))
 	}
 
 	return &PointerMap{
