@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -125,6 +126,8 @@ func main() {
 			if Log != nil {
 				fmt.Printf("Log file: %s\n", Log.LogPath())
 			}
+		case "loglast":
+			cmdLogLast(args)
 		case "exit", "quit", "q":
 			Log.Info("CMD: exit")
 			fmt.Println("Bye!")
@@ -143,10 +146,10 @@ func main() {
 }
 
 func printBanner() {
-	fmt.Println("============================================")
-	fmt.Println("   MemHacker - CE-style Memory Tool")
-	fmt.Println("   type 'help' for commands")
-	fmt.Println("============================================")
+	fmt.Printf("============================================\n")
+	fmt.Printf("   MemHacker v%s - CE-style Memory Tool\n", AppVersion)
+	fmt.Printf("   type 'help' for commands\n")
+	fmt.Printf("============================================\n")
 }
 
 func printHelp() {
@@ -200,6 +203,12 @@ POINTER SCANNING (CE-style multi-session)
     5. scan exact 100           <- find new HP address
     6. pmsave s2.pmap 0xNEWADDR <- second snapshot
     7. pscan 6 2048 50          <- cross-reference both sessions
+
+OTHER
+  log                  - show log file path
+  loglast [N]          - copy full log to clipboard (last N lines if specified)
+                         includes version header — paste directly into GitHub issue
+  exit / quit          - exit
 `)
 }
 
@@ -921,6 +930,51 @@ func cmdReset() {
 		scanner.Results = nil
 	}
 	fmt.Println("Scan results cleared")
+}
+
+// cmdLogLast reads the full log file and copies it to Windows clipboard via clip.exe
+// Usage: loglast [N]  — optionally last N lines only
+func cmdLogLast(args []string) {
+	if Log == nil || Log.LogPath() == "" {
+		fmt.Println("No log file active")
+		return
+	}
+
+	data, err := os.ReadFile(Log.LogPath())
+	if err != nil {
+		fmt.Println("Cannot read log file:", err)
+		return
+	}
+
+	content := string(data)
+
+	// If N specified, take only last N lines
+	if len(args) > 0 {
+		n, _ := strconv.Atoi(args[0])
+		if n > 0 {
+			lines := strings.Split(content, "\n")
+			if n < len(lines) {
+				lines = lines[len(lines)-n:]
+			}
+			content = strings.Join(lines, "\n")
+		}
+	}
+
+	// Prepend version header so issue comments always have version info
+	header := fmt.Sprintf("MemHacker v%s log\n%s\n\n", AppVersion, strings.Repeat("=", 40))
+	content = header + content
+
+	// Copy to clipboard using clip.exe (built into Windows, no deps)
+	cmd := exec.Command("clip")
+	cmd.Stdin = strings.NewReader(content)
+	if err := cmd.Run(); err != nil {
+		fmt.Println("clipboard copy failed:", err)
+		fmt.Println("(Make sure you're running on Windows)")
+		return
+	}
+
+	lineCount := strings.Count(content, "\n")
+	fmt.Printf("Copied %d lines to clipboard — paste directly into GitHub issue\n", lineCount)
 }
 
 func parseAddr(s string) (uintptr, error) {

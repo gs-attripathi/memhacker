@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const AppVersion = "1.5.0"
+
 type LogLevel int
 
 const (
@@ -60,7 +62,7 @@ func InitLogger(path string, level LogLevel, console bool) error {
 		logPath: path,
 		console: console,
 	}
-	Log.Info("=== MemHacker started ===")
+	Log.Info("=== MemHacker v%s started ===", AppVersion)
 	Log.Info("Log file: %s", path)
 	Log.Info("Log level: %s", levelNames[level])
 	return nil
