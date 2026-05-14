@@ -204,6 +204,11 @@ func isReadable(mbi *MEMORY_BASIC_INFORMATION) bool {
 	if mbi.Protect&PAGE_GUARD != 0 {
 		return false
 	}
+	// skip pure executable pages — code sections don't store pointers to heap
+	execOnly := uint32(0x10 | 0x20) // PAGE_EXECUTE | PAGE_EXECUTE_READ
+	if mbi.Protect&execOnly != 0 && mbi.Protect&^execOnly == 0 {
+		return false
+	}
 	return mbi.Protect&uint32(0x02|0x04|0x20|0x40|0x80|0x10) != 0
 }
 
