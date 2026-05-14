@@ -190,10 +190,12 @@ POINTER SCANNING (CE-style multi-session)
   pmsessions                    - list all registered sessions
   pmclear                       - clear all sessions + pmap
 
-  pscan [depth] [offset] [max]  - run pointer scan across ALL registered sessions
-                                  only chains valid in every session are returned
+  pscan [depth] [offset] [max] [filter]
+                                - run pointer scan across ALL registered sessions
+                                  filter: exe (default), game, all
+                                  auto-widens: exe -> game -> all if no results
                                   defaults: depth=7 offset=5000 max=100
-                                  e.g: pscan 7 4096 200
+                                  e.g: pscan 7 4096 200 game
 
   WORKFLOW:
     1. open game.exe
@@ -843,6 +845,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	depth := 7
 	maxOffset := uintptr(5000)
 	maxResults := 100
+	baseFilter := "" // default = "exe", auto-widens if needed
 
 	if len(args) > 0 {
 		depth, _ = strconv.Atoi(args[0])
@@ -853,6 +856,9 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	}
 	if len(args) > 2 {
 		maxResults, _ = strconv.Atoi(args[2])
+	}
+	if len(args) > 3 {
+		baseFilter = strings.ToLower(args[3]) // "exe", "game", "all"
 	}
 
 	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d\n",
@@ -867,6 +873,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		MaxDepth:   depth,
 		MaxOffset:  maxOffset,
 		MaxResults: maxResults,
+		BaseFilter: baseFilter,
 	})
 	elapsed := time.Since(start)
 

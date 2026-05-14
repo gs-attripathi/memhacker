@@ -80,7 +80,8 @@ type PointerScanConfig struct {
 	Sessions   []PointerScanSession
 	MaxDepth   int
 	MaxOffset  uintptr
-	MaxResults int // final output cap; 0 = 100 default
+	MaxResults int    // final output cap; 0 = 100 default
+	BaseFilter string // "exe" (default), "game" (all non-system), "all"
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +370,7 @@ func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
 const bfsHardCap    = 2_000_000 // max chains collected per session
 const bfsQueueCap   = 300_000   // max BFS queue size per depth level
 
-func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr) []PointerChain {
+func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string) []PointerChain {
 	type qItem struct {
 		addr    uintptr   // memory address to look backwards from
 		offsets []uintptr // chain offsets built so far (innermost first)
@@ -417,7 +418,7 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 						newOffsets[0] = offset
 						copy(newOffsets[1:], item.offsets)
 
-						if mod := findStaticModule(pm.Modules, p.addr); mod != nil {
+						if mod := findStaticModule(pm.Modules, p.addr, filter); mod != nil {
 							// p.addr is inside a non-system module → static pointer found
 							mu.Lock()
 							if len(results) < bfsHardCap {
@@ -454,14 +455,26 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 	return results
 }
 
-// findStaticModule returns the module containing addr, or nil if system/not found.
-func findStaticModule(modules []ModuleInfo, addr uintptr) *ModuleInfo {
+// findStaticModule returns the module containing addr based on filter:
+// "exe"  = only the main executable (.exe)
+// "game" = any non-system module
+// "all"  = any module including GPU/driver DLLs
+func findStaticModule(modules []ModuleInfo, addr uintptr, filter string) *ModuleInfo {
 	for i := range modules {
 		m := &modules[i]
-		if addr >= m.Base && addr < m.Base+uintptr(m.Size) {
-			if m.IsSystem {
-				return nil
+		if addr < m.Base || addr >= m.Base+uintptr(m.Size) {
+			continue
+		}
+		switch filter {
+		case "exe":
+			if strings.HasSuffix(strings.ToLower(m.Name), ".exe") {
+				return m
 			}
+		case "game":
+			if !m.IsSystem {
+				return m
+			}
+		case "all":
 			return m
 		}
 	}
@@ -482,6 +495,12 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		maxResults = 100
 	}
 
+	// Default filter: exe only
+	filter := cfg.BaseFilter
+	if filter == "" {
+		filter = "exe"
+	}
+
 	// Warn on duplicate sessions
 	seen := map[string]bool{}
 	for _, s := range cfg.Sessions {
@@ -492,18 +511,58 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		seen[key] = true
 	}
 
-	Log.Info("MultiSessionPointerScan: %d sessions depth=%d offset=0x%X maxResults=%d",
-		len(cfg.Sessions), cfg.MaxDepth, cfg.MaxOffset, maxResults)
+	// Try with current filter, auto-widen if needed
+	filters := []string{filter}
+	if filter == "exe" {
+		filters = append(filters, "game", "all")
+	} else if filter == "game" {
+		filters = append(filters, "all")
+	}
 
-	// Run BFS on each session SEQUENTIALLY for clean output
-	allChains := make([]map[string]PointerChain, len(cfg.Sessions))
+	for _, f := range filters {
+		fmt.Printf("\nBase filter: %s\n", filterLabel(f))
+		Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d", f, cfg.MaxDepth, cfg.MaxOffset, maxResults)
 
-	for idx, sess := range cfg.Sessions {
+		results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, f)
+
+		if len(results) > 0 {
+			Log.Info("MultiSessionPointerScan: %d results with filter=%s", len(results), f)
+			return results
+		}
+
+		// No results — try broader filter
+		if f == "exe" {
+			fmt.Println("  No chains anchored in main EXE — retrying with game DLLs...")
+		} else if f == "game" {
+			fmt.Println("  No chains in game DLLs either — retrying with all modules...")
+			fmt.Println("  (results may include GPU/driver DLLs — less reliable)")
+		}
+	}
+
+	return nil
+}
+
+func filterLabel(f string) string {
+	switch f {
+	case "exe":
+		return "main EXE only (most reliable)"
+	case "game":
+		return "game DLLs + EXE (non-system)"
+	case "all":
+		return "all modules including GPU/driver DLLs"
+	}
+	return f
+}
+
+func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string) []PointerResult {
+	allChains := make([]map[string]PointerChain, len(sessions))
+
+	for idx, sess := range sessions {
 		fmt.Printf("  Session [%d/%d] %s target=0x%X (%d entries)\n",
-			idx+1, len(cfg.Sessions), sess.Label, sess.PMap.TargetAddr, len(sess.PMap.Entries))
-		Log.Info("  Session[%d] %s: BFS start target=0x%X", idx, sess.Label, sess.PMap.TargetAddr)
+			idx+1, len(sessions), sess.Label, sess.PMap.TargetAddr, len(sess.PMap.Entries))
+		Log.Info("  Session[%d] %s: BFS start target=0x%X filter=%s", idx, sess.Label, sess.PMap.TargetAddr, filter)
 
-		chains := bfsSingleSession(sess.PMap, sess.PMap.TargetAddr, cfg.MaxDepth, cfg.MaxOffset)
+		chains := bfsSingleSession(sess.PMap, sess.PMap.TargetAddr, maxDepth, maxOffset, filter)
 
 		m := make(map[string]PointerChain, len(chains))
 		for _, c := range chains {
@@ -514,7 +573,7 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		Log.Info("  Session[%d] %s: found %d chains", idx, sess.Label, len(chains))
 	}
 
-	// Cross-reference: keep only chains present in EVERY session
+	// Cross-reference
 	candidates := allChains[0]
 	for i := 1; i < len(allChains); i++ {
 		filtered := make(map[string]PointerChain)
@@ -532,7 +591,6 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		results = append(results, PointerResult{Chain: c})
 	}
 
-	// Sort: shorter chains first, then by base offset
 	sort.Slice(results, func(i, j int) bool {
 		ci, cj := results[i].Chain, results[j].Chain
 		if len(ci.Offsets) != len(cj.Offsets) {
@@ -544,8 +602,6 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	if len(results) > maxResults {
 		results = results[:maxResults]
 	}
-
-	Log.Info("MultiSessionPointerScan: %d chains after cross-reference", len(results))
 	return results
 }
 
