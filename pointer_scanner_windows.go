@@ -403,8 +403,8 @@ func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
 // bfsSingleSession performs backward BFS from target through the pointer map.
 // It returns all pointer chains anchored at a non-system module (static address).
 // hardCap limits how many chains are collected per session to prevent OOM.
-const bfsHardCap  = 0 // 0 = no cap
-const bfsQueueCap = 0 // 0 = no cap
+const bfsHardCap  = 10_000_000 // max chains per session (CE default is ~10k but we keep more for cross-ref)
+const bfsQueueCap = 2_000_000  // max queue per depth level
 
 func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string) []PointerChain {
 	type qItem struct {
