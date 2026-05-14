@@ -113,6 +113,9 @@ func main() {
 		case "pmload":
 			Log.Info("CMD: pmload %v", args)
 			cmdPmapLoad(args)
+		case "pmadd":
+			Log.Info("CMD: pmadd %v", args)
+			cmdPmapAdd(args)
 		case "pmsessions":
 			cmdPmapSessions()
 		case "pmclear":
@@ -203,8 +206,9 @@ FREEZING
 
 POINTER SCANNING (CE-style multi-session)
   pmap                          - build pointer map for current process (in-memory)
-  pmsave <file> <addr>          - save pmap to file + register as session
-                                  (target addr saved inside the file)
+  pmsave <file> <addr>          - build pmap + save + register session
+  pmadd <addr>                  - add another address to last session (CE-style: 1 pmap, N addresses)
+  pmload <file>                 - load saved pmap
                                   e.g: pmsave s1.pmap 0x1A2B3C4D
   pmload <file>                 - load saved pmap (target addr read from file)
                                   e.g: pmload s1.pmap
@@ -847,16 +851,55 @@ func cmdPmapLoad(args []string) {
 		pm.TargetAddr, len(pscanSessions))
 }
 
+// pmadd <addr> — add another target address to the last registered session (same pmap)
+func cmdPmapAdd(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: pmadd <addr>")
+		fmt.Println("  Adds another target address to the last pmsave session (same pmap)")
+		fmt.Println("  e.g: pmsave a1.pmap 0xAAA  <- first address")
+		fmt.Println("       pmadd 0xBBB            <- second address, same pmap")
+		fmt.Println("       pmadd 0xCCC            <- third address, same pmap")
+		fmt.Println("       pscan                  <- CE-style: one pmap, multiple addresses")
+		return
+	}
+	if len(pscanSessions) == 0 {
+		fmt.Println("No session registered yet. Run pmsave first.")
+		return
+	}
+	addr, err := resolveAddr(args[0])
+	if err != nil {
+		fmt.Println("Invalid address:", err)
+		return
+	}
+	// Add to last session
+	last := &pscanSessions[len(pscanSessions)-1]
+	last.TargetAddrs = append(last.TargetAddrs, addr)
+	fmt.Printf("Added 0x%X to session '%s' (now %d targets: ",
+		addr, last.Label, len(last.TargetAddrs))
+	for i, a := range last.TargetAddrs {
+		if i > 0 {
+			fmt.Printf(", ")
+		}
+		fmt.Printf("0x%X", a)
+	}
+	fmt.Println(")")
+	Log.Info("pmadd: added 0x%X to session %s, total targets=%d", addr, last.Label, len(last.TargetAddrs))
+}
 // pmsessions — list registered sessions
 func cmdPmapSessions() {
 	if len(pscanSessions) == 0 {
 		fmt.Println("No sessions registered. Use 'pmsave' or 'pmload' to add sessions.")
 		return
 	}
-	fmt.Printf("%-4s  %-14s  %-40s  %s\n", "#", "Target Addr", "File", "Entries")
-	fmt.Println(strings.Repeat("-", 75))
 	for i, s := range pscanSessions {
-		fmt.Printf("%-4d  0x%-12X  %-40s  %d\n", i+1, s.PMap.TargetAddr, s.Label, len(s.PMap.Entries))
+		targets := s.TargetAddrs
+		if len(targets) == 0 {
+			targets = []uintptr{s.PMap.TargetAddr}
+		}
+		fmt.Printf("[%d] %s (%d entries)\n", i+1, s.Label, len(s.PMap.Entries))
+		for j, a := range targets {
+			fmt.Printf("     target %d: 0x%X\n", j+1, a)
+		}
 	}
 }
 

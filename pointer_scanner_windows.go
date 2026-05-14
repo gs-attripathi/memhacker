@@ -39,8 +39,9 @@ type PointerMap struct {
 }
 
 type PointerScanSession struct {
-	PMap       *PointerMap
-	Label      string
+	PMap        *PointerMap
+	Label       string
+	TargetAddrs []uintptr // multiple target addresses for same pmap (CE-style)
 }
 
 type PointerChain struct {
@@ -587,22 +588,47 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 	allChains := make([]map[string]PointerChain, len(sessions))
 
 	for idx, sess := range sessions {
-		fmt.Printf("  Session [%d/%d] %s target=0x%X (%d entries)\n",
-			idx+1, len(sessions), sess.Label, sess.PMap.TargetAddr, len(sess.PMap.Entries))
-		Log.Info("  Session[%d] %s: BFS start target=0x%X filter=%s", idx, sess.Label, sess.PMap.TargetAddr, filter)
-
-		chains := bfsSingleSession(sess.PMap, sess.PMap.TargetAddr, maxDepth, maxOffset, filter)
-
-		m := make(map[string]PointerChain, len(chains))
-		for _, c := range chains {
-			m[c.Key()] = c
+		// Collect target addresses — from TargetAddrs list if set, else from PMap.TargetAddr
+		targets := sess.TargetAddrs
+		if len(targets) == 0 {
+			targets = []uintptr{sess.PMap.TargetAddr}
 		}
-		allChains[idx] = m
-		fmt.Printf("    => %d chains found\n", len(chains))
-		Log.Info("  Session[%d] %s: found %d chains", idx, sess.Label, len(chains))
+
+		fmt.Printf("  Session [%d/%d] %s (%d entries, %d targets)\n",
+			idx+1, len(sessions), sess.Label, len(sess.PMap.Entries), len(targets))
+		Log.Info("  Session[%d] %s: BFS start filter=%s targets=%d", idx, sess.Label, filter, len(targets))
+
+		// BFS each target address against this pmap, then intersect results
+		var sessionMap map[string]PointerChain
+		for ti, target := range targets {
+			fmt.Printf("    target [%d/%d] 0x%X\n", ti+1, len(targets), target)
+			chains := bfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter)
+			m := make(map[string]PointerChain, len(chains))
+			for _, c := range chains {
+				m[c.Key()] = c
+			}
+			fmt.Printf("    => %d chains\n", len(chains))
+			Log.Info("  Session[%d] target 0x%X: found %d chains", idx, target, len(chains))
+
+			if sessionMap == nil {
+				sessionMap = m
+			} else {
+				// Intersect — only chains present for ALL targets in this session
+				filtered := make(map[string]PointerChain)
+				for key, chain := range sessionMap {
+					if _, ok := m[key]; ok {
+						filtered[key] = chain
+					}
+				}
+				sessionMap = filtered
+			}
+			fmt.Printf("    after intersect: %d candidates\n", len(sessionMap))
+		}
+		allChains[idx] = sessionMap
+		fmt.Printf("    => session total: %d chains\n", len(sessionMap))
 	}
 
-	// Cross-reference
+	// Cross-reference across sessions
 	candidates := allChains[0]
 	for i := 1; i < len(allChains); i++ {
 		filtered := make(map[string]PointerChain)
