@@ -246,6 +246,7 @@ func EnumMemoryRegions(handle windows.Handle, writableOnly bool) []MEMORY_BASIC_
 	return regions
 }
 // gameRootFromModules finds the main exe path and returns its directory (game root)
+// Goes up one extra level if exe is in a sub-directory like bin/win64/
 func gameRootFromModules(pid uint32) string {
 	snap, err := windows.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32, pid)
 	if err != nil {
@@ -261,13 +262,46 @@ func gameRootFromModules(pid uint32) string {
 	}
 	// First module is always the main EXE
 	exePath := strings.ToLower(windows.UTF16ToString(entry.ExePath[:]))
-	// Get directory: strip filename, keep path up to last backslash
+
+	// Get the exe's immediate directory
+	exeDir := ""
 	for i := len(exePath) - 1; i >= 0; i-- {
 		if exePath[i] == '\\' || exePath[i] == '/' {
-			return exePath[:i+1]
+			exeDir = exePath[:i+1]
+			break
 		}
 	}
-	return ""
+	if exeDir == "" {
+		return ""
+	}
+
+	// Heuristic: if exe is in a sub-dir like bin\, bin32\, bin64\, win64\, win32\, binaries\*
+	// then go up to the parent — game DLLs are usually in the root
+	subDirNames := []string{"bin\\", "bin32\\", "bin64\\", "win32\\", "win64\\", "binaries\\", "x64\\", "x86\\"}
+	dirLower := strings.ToLower(exeDir)
+	for _, sub := range subDirNames {
+		if strings.HasSuffix(dirLower, sub) || strings.Contains(dirLower, "\\"+sub) {
+			// Go one level up
+			trimmed := strings.TrimSuffix(exeDir, sub)
+			if trimmed != "" && trimmed != exeDir {
+				// Check if there are DLLs at the parent level by going up one more
+				parentDir := ""
+				trimmedWithoutSlash := strings.TrimSuffix(trimmed, "\\")
+				for i := len(trimmedWithoutSlash) - 1; i >= 0; i-- {
+					if trimmedWithoutSlash[i] == '\\' || trimmedWithoutSlash[i] == '/' {
+						parentDir = trimmedWithoutSlash[:i+1]
+						break
+					}
+				}
+				if parentDir != "" {
+					Log.Debug("gameRoot: exe in subdir %q, using parent %q", exeDir, parentDir)
+					return parentDir
+				}
+				return trimmed
+			}
+		}
+	}
+	return exeDir
 }
 
 // GetModules returns all loaded modules, with IsGameDir set based on game root directory
