@@ -937,22 +937,25 @@ func cmdModules() {
 	fmt.Printf("%-40s  %-8s  %-10s  %s\n", "Module", "Size(KB)", "Type", "Path")
 	fmt.Println(strings.Repeat("-", 100))
 	for _, m := range currentModules {
-		kind := "GAME"
-		if m.IsSystem {
+		kind := "OTHER"
+		if m.IsGameDir {
+			kind = "GAME"
+		} else if m.IsSystem {
 			kind = "SYSTEM"
 		}
 		fmt.Printf("%-40s  %-8d  %-10s  %s\n", m.Name, m.Size/1024, kind, m.Path)
 	}
-	// summary
-	sys, game := 0, 0
+	sys, game, other := 0, 0, 0
 	for _, m := range currentModules {
-		if m.IsSystem {
+		if m.IsGameDir {
+			game++
+		} else if m.IsSystem {
 			sys++
 		} else {
-			game++
+			other++
 		}
 	}
-	fmt.Printf("\nTotal: %d modules (%d game/unknown, %d system)\n", len(currentModules), game, sys)
+	fmt.Printf("\nTotal: %d modules (%d game dir, %d system, %d other)\n", len(currentModules), game, sys, other)
 }
 
 func cmdReset() {

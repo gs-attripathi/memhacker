@@ -86,11 +86,12 @@ type ProcessInfo struct {
 }
 
 type ModuleInfo struct {
-	Name     string
-	Base     uintptr
-	Size     uint32
-	Path     string // full path to the DLL/EXE
-	IsSystem bool   // true if it's a Windows system DLL
+	Name       string
+	Base       uintptr
+	Size       uint32
+	Path       string // full path to the DLL/EXE
+	IsSystem   bool   // true if it's a Windows system DLL
+	IsGameDir  bool   // true if path is under the main exe's directory
 }
 
 // known system DLL paths (lowercased substrings)
@@ -244,9 +245,39 @@ func EnumMemoryRegions(handle windows.Handle, writableOnly bool) []MEMORY_BASIC_
 	Log.Debug("EnumMemoryRegions: found %d regions (writableOnly=%v)", len(regions), writableOnly)
 	return regions
 }
+// gameRootFromModules finds the main exe path and returns its directory (game root)
+func gameRootFromModules(pid uint32) string {
+	snap, err := windows.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32, pid)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(snap)
 
+	var entry MODULEENTRY32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	r1, _, _ := procModule32First.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
+	if r1 == 0 {
+		return ""
+	}
+	// First module is always the main EXE
+	exePath := strings.ToLower(windows.UTF16ToString(entry.ExePath[:]))
+	// Get directory: strip filename, keep path up to last backslash
+	for i := len(exePath) - 1; i >= 0; i-- {
+		if exePath[i] == '\\' || exePath[i] == '/' {
+			return exePath[:i+1]
+		}
+	}
+	return ""
+}
+
+// GetModules returns all loaded modules, with IsGameDir set based on game root directory
 func GetModules(pid uint32) ([]ModuleInfo, error) {
 	Log.Debug("GetModules: PID=%d", pid)
+
+	// Find game root directory from main exe path
+	gameRoot := gameRootFromModules(pid)
+	Log.Debug("GetModules: game root = %q", gameRoot)
+
 	snap, err := windows.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32, pid)
 	if err != nil {
 		Log.Error("GetModules: PID=%d snapshot failed: %v", pid, err)
@@ -261,17 +292,20 @@ func GetModules(pid uint32) ([]ModuleInfo, error) {
 	r1, _, _ := procModule32First.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
 	for r1 != 0 {
 		path := windows.UTF16ToString(entry.ExePath[:])
+		lowerPath := strings.ToLower(path)
+		isGame := gameRoot != "" && strings.HasPrefix(lowerPath, gameRoot)
 		mods = append(mods, ModuleInfo{
-			Name:     windows.UTF16ToString(entry.Module[:]),
-			Base:     entry.ModBaseAddr,
-			Size:     entry.ModBaseSize,
-			Path:     path,
-			IsSystem: classifyModule(path),
+			Name:      windows.UTF16ToString(entry.Module[:]),
+			Base:      entry.ModBaseAddr,
+			Size:      entry.ModBaseSize,
+			Path:      path,
+			IsSystem:  classifyModule(path),
+			IsGameDir: isGame,
 		})
 		entry.Size = uint32(unsafe.Sizeof(entry))
 		r1, _, _ = procModule32Next.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
 	}
-	Log.Debug("GetModules: PID=%d found %d modules", pid, len(mods))
+	Log.Debug("GetModules: PID=%d found %d modules (gameRoot=%q)", pid, len(mods), gameRoot)
 	return mods, nil
 }
 

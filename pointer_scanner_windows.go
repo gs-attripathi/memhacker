@@ -457,8 +457,8 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 
 // findStaticModule returns the module containing addr based on filter:
 // "exe"  = only the main executable (.exe)
-// "game" = any non-system module
-// "all"  = any module including GPU/driver DLLs
+// "game" = any module inside the game's root directory (detected from exe path)
+// "all"  = any module including GPU/driver/system DLLs
 func findStaticModule(modules []ModuleInfo, addr uintptr, filter string) *ModuleInfo {
 	for i := range modules {
 		m := &modules[i]
@@ -471,7 +471,9 @@ func findStaticModule(modules []ModuleInfo, addr uintptr, filter string) *Module
 				return m
 			}
 		case "game":
-			if !m.IsSystem {
+			// Use IsGameDir — set from actual game root directory at attach time
+			// Falls back to non-system if IsGameDir not set (e.g. loaded from old pmap)
+			if m.IsGameDir {
 				return m
 			}
 		case "all":
