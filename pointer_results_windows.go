@@ -203,13 +203,13 @@ func cmdPointerResultsLoad(args []string) {
 		fmt.Printf("%-5s  %-10s  %-20s  %s\n", "#", "Status", "Resolved To", "Chain")
 		fmt.Println(strings.Repeat("-", 90))
 
-		valid := 0
+		var matchedResults []PointerResult
 		invalid := 0
 		for i, r := range lastPscanResults {
 			addr, ok := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
 			if ok && addr == expectedAddr {
 				fmt.Printf("%-5d  %-10s  0x%-18X  %s\n", i+1, "MATCH", addr, r.Chain.String())
-				valid++
+				matchedResults = append(matchedResults, r)
 			} else if ok {
 				fmt.Printf("%-5d  %-10s  0x%-18X  %s\n", i+1, "WRONG ADDR", addr, r.Chain.String())
 				invalid++
@@ -218,9 +218,15 @@ func cmdPointerResultsLoad(args []string) {
 				invalid++
 			}
 		}
-		fmt.Printf("\n%d chains match address 0x%X, %d don't\n", valid, expectedAddr, invalid)
-		fmt.Println("Use chains with MATCH status — they are confirmed valid for this session")
-		Log.Info("prload verify: %d match 0x%X, %d invalid", valid, expectedAddr, invalid)
+		fmt.Printf("\n%d chains match 0x%X, %d don't\n", len(matchedResults), expectedAddr, invalid)
+
+		// Replace in-memory results with only matched ones
+		lastPscanResults = matchedResults
+		if len(matchedResults) > 0 {
+			fmt.Printf("\nIn-memory results updated to %d matched chains only\n", len(matchedResults))
+			fmt.Println("Tip: prsave <file.json>  <- overwrite file with only working chains")
+		}
+		Log.Info("prload verify: %d match 0x%X, %d invalid", len(matchedResults), expectedAddr, invalid)
 	} else if len(args) >= 2 && currentHandle == 0 {
 		fmt.Println("Not attached to process — skipping address verification")
 		fmt.Println("Use 'open <game>' first, then run: prload", args[0], args[1])
@@ -228,7 +234,6 @@ func cmdPointerResultsLoad(args []string) {
 			fmt.Printf("  [%d] %s\n", i+1, c.String())
 		}
 	} else {
-		// No expected addr — just show chains and auto-verify if attached
 		if currentHandle != 0 {
 			cmdPointerResultsVerify(nil)
 		} else {
