@@ -179,10 +179,10 @@ FREEZING
 POINTER SCANNING (CE-style multi-session)
   pmap                          - build pointer map for current process (in-memory)
   pmsave <file> <addr>          - save pmap to file + register as session
-                                  (builds pmap first if needed)
+                                  (target addr saved inside the file)
                                   e.g: pmsave s1.pmap 0x1A2B3C4D
-  pmload <file> <addr>          - load a saved pmap file + register as session
-                                  e.g: pmload s1.pmap 0x1A2B3C4D
+  pmload <file>                 - load saved pmap (target addr read from file)
+                                  e.g: pmload s1.pmap
   pmsessions                    - list all registered sessions
   pmclear                       - clear all sessions + pmap
 
@@ -724,7 +724,9 @@ func cmdPmapSave(args []string) {
 		}
 	}
 
-	// Save to file
+	// Embed target address into the map itself before saving
+	pointerMap.TargetAddr = targetAddr
+
 	path := args[0]
 	if err := pointerMap.Save(path); err != nil {
 		fmt.Println("Save failed:", err)
@@ -743,16 +745,11 @@ func cmdPmapSave(args []string) {
 		path, len(pointerMap.Entries), targetAddr, len(pscanSessions))
 }
 
-// pmload <file> <target_addr_hex>
-// Loads a pmap file from disk and registers it as a session.
+// pmload <file>
+// Loads a pmap file — target address is read from the file itself, no need to specify.
 func cmdPmapLoad(args []string) {
-	if len(args) < 2 {
-		fmt.Println("Usage: pmload <file.pmap> <target_addr_hex>")
-		return
-	}
-	targetAddr, err := parseAddr(args[1])
-	if err != nil {
-		fmt.Println("Invalid address:", err)
+	if len(args) < 1 {
+		fmt.Println("Usage: pmload <file.pmap>")
 		return
 	}
 	pm, err := LoadPointerMap(args[0])
@@ -760,16 +757,30 @@ func cmdPmapLoad(args []string) {
 		fmt.Println("Load failed:", err)
 		return
 	}
+	if pm.TargetAddr == 0 {
+		fmt.Println("Warning: this pmap has no target address saved (old format?)")
+		fmt.Println("Use: pmload <file.pmap> <addr_hex>  to specify it manually")
+		if len(args) >= 2 {
+			addr, err := parseAddr(args[1])
+			if err != nil {
+				fmt.Println("Invalid address:", err)
+				return
+			}
+			pm.TargetAddr = addr
+		} else {
+			return
+		}
+	}
 	pscanSessions = append(pscanSessions, PointerScanSession{
-		TargetAddr: targetAddr,
+		TargetAddr: pm.TargetAddr,
 		PMap:       pm,
 		Label:      args[0],
 	})
-	Log.Info("pmload: loaded %s, target=0x%X, session count=%d", args[0], targetAddr, len(pscanSessions))
-	fmt.Printf("Loaded %s (%d entries, pid=%d, saved=%s) | target=0x%X | session #%d registered\n",
-		args[0], len(pm.Entries), pm.PID,
+	Log.Info("pmload: loaded %s, target=0x%X, session count=%d", args[0], pm.TargetAddr, len(pscanSessions))
+	fmt.Printf("Loaded %s | pid=%d | saved=%s | target=0x%X | session #%d registered\n",
+		args[0], pm.PID,
 		pm.CreatedAt.Format("2006-01-02 15:04:05"),
-		targetAddr, len(pscanSessions))
+		pm.TargetAddr, len(pscanSessions))
 }
 
 // pmsessions — list registered sessions

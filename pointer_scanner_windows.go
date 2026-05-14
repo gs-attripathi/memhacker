@@ -28,10 +28,11 @@ type ptrEntry struct {
 }
 
 type PointerMap struct {
-	Entries   []ptrEntry // sorted by .value
-	Modules   []ModuleInfo
-	CreatedAt time.Time
-	PID       uint32
+	Entries    []ptrEntry
+	Modules    []ModuleInfo
+	CreatedAt  time.Time
+	PID        uint32
+	TargetAddr uintptr // the address we were scanning for when this pmap was saved
 }
 
 // Save writes the pointer map to a binary file.
@@ -52,6 +53,7 @@ func (pm *PointerMap) Save(path string) error {
 	w(pmapVersion)
 	w(pm.PID)
 	w(pm.CreatedAt.Unix())
+	w(uint64(pm.TargetAddr))
 	w(uint32(len(pm.Modules)))
 	for _, m := range pm.Modules {
 		name := []byte(m.Name)
@@ -82,6 +84,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 
 	var magic, version, pid uint32
 	var ts int64
+	var targetAddr uint64
 	r(&magic)
 	if magic != pmapMagic {
 		return nil, fmt.Errorf("not a valid pmap file (bad magic)")
@@ -89,6 +92,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	r(&version)
 	r(&pid)
 	r(&ts)
+	r(&targetAddr)
 
 	var modCount uint32
 	r(&modCount)
@@ -116,10 +120,11 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	}
 
 	return &PointerMap{
-		Entries:   entries,
-		Modules:   mods,
-		CreatedAt: time.Unix(ts, 0),
-		PID:       pid,
+		Entries:    entries,
+		Modules:    mods,
+		CreatedAt:  time.Unix(ts, 0),
+		PID:        pid,
+		TargetAddr: uintptr(targetAddr),
 	}, nil
 }
 
