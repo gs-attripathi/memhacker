@@ -22,7 +22,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const pmapMagic   = uint32(0x504D4150) // "PMAP"
-const pmapVersion = uint32(2)
+const pmapVersion = uint32(3)           // v3: added module path
 
 type ptrEntry struct {
 	value uintptr // what is stored at addr (the pointer value)
@@ -112,6 +112,10 @@ func (pm *PointerMap) Save(path string) error {
 		name := []byte(m.Name)
 		w(uint16(len(name)))
 		bw.Write(name)
+		// Save path too so IsGameDir can be reconstructed on load
+		path := []byte(m.Path)
+		w(uint16(len(path)))
+		bw.Write(path)
 		w(uint64(m.Base))
 		w(m.Size)
 	}
@@ -159,6 +163,17 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 		r(&nlen)
 		nameBuf := make([]byte, nlen)
 		io.ReadFull(br, nameBuf)
+
+		// v3+: read module path
+		var path string
+		if version >= 3 {
+			var plen uint16
+			r(&plen)
+			pathBuf := make([]byte, plen)
+			io.ReadFull(br, pathBuf)
+			path = string(pathBuf)
+		}
+
 		var base uint64
 		var size uint32
 		r(&base)
@@ -167,10 +182,30 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 			Name:     string(nameBuf),
 			Base:     uintptr(base),
 			Size:     size,
-			IsSystem: classifyModule(""),
+			Path:     path,
+			IsSystem: classifyModule(path),
 		}
-		// re-classify: known system DLLs by name
-		mods[i].IsSystem = isSystemModuleName(mods[i].Name)
+		if path == "" {
+			mods[i].IsSystem = isSystemModuleName(mods[i].Name)
+		}
+	}
+
+	// Derive game root from first module path (first module = main exe)
+	gameRoot := ""
+	if len(mods) > 0 && mods[0].Path != "" {
+		p := strings.ToLower(mods[0].Path)
+		for i := len(p) - 1; i >= 0; i-- {
+			if p[i] == '\\' || p[i] == '/' {
+				gameRoot = p[:i+1]
+				break
+			}
+		}
+	}
+	// Set IsGameDir for all modules
+	for i := range mods {
+		if gameRoot != "" {
+			mods[i].IsGameDir = strings.HasPrefix(strings.ToLower(mods[i].Path), gameRoot)
+		}
 	}
 
 	var entryCount uint64
