@@ -83,14 +83,6 @@ type ScanParams struct {
 	Executable bool
 }
 
-// PointerResult - a found pointer chain
-type PointerResult struct {
-	BaseModule string
-	BaseOffset uintptr
-	Offsets    []uintptr
-	FinalAddr  uintptr
-}
-
 // FrozenEntry - address being frozen to a value
 type FrozenEntry struct {
 	Address uintptr

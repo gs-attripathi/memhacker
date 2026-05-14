@@ -23,6 +23,9 @@ var (
 	currentDT      DataType = TypeInt32
 	pointerMap     *PointerMap
 	addressList    []addressEntry
+
+	// pointer scan sessions: each is a saved (pmap_file, target_addr) pair
+	pscanSessions []PointerScanSession
 )
 
 type addressEntry struct {
@@ -98,6 +101,17 @@ func main() {
 		case "pmap":
 			Log.Info("CMD: pmap")
 			cmdBuildPointerMap()
+		case "pmsave":
+			Log.Info("CMD: pmsave %v", args)
+			cmdPmapSave(args)
+		case "pmload":
+			Log.Info("CMD: pmload %v", args)
+			cmdPmapLoad(args)
+		case "pmsessions":
+			cmdPmapSessions()
+		case "pmclear":
+			Log.Info("CMD: pmclear")
+			cmdPmapClear()
 		case "pscan":
 			Log.Info("CMD: pscan %v", args)
 			cmdPointerScan(args, reader)
@@ -162,12 +176,29 @@ FREEZING
   unfreeze <id>                  - unfreeze by ID
   frozen                         - show frozen entries
 
-POINTER SCANNING (CE-style)
-  pmap                   - manually build pointer map (auto-built by pscan if missing)
-  pscan <addr> [depth] [offset] [max_results]
-                         - pointer scan for address (pmap auto-built if needed)
-                           defaults: depth=5 offset=2048 max=100
-                           example:  pscan 0x1A2B3C4D 7 4096 200
+POINTER SCANNING (CE-style multi-session)
+  pmap                          - build pointer map for current process (in-memory)
+  pmsave <file> <addr>          - save pmap to file + register as session
+                                  (builds pmap first if needed)
+                                  e.g: pmsave s1.pmap 0x1A2B3C4D
+  pmload <file> <addr>          - load a saved pmap file + register as session
+                                  e.g: pmload s1.pmap 0x1A2B3C4D
+  pmsessions                    - list all registered sessions
+  pmclear                       - clear all sessions + pmap
+
+  pscan [depth] [offset] [max]  - run pointer scan across ALL registered sessions
+                                  only chains valid in every session are returned
+                                  defaults: depth=5 offset=0x800 max=100
+                                  e.g: pscan 7 4096 200
+
+  WORKFLOW:
+    1. open game.exe
+    2. scan exact 100           <- find HP address
+    3. pmsave s1.pmap 0xADDR    <- snapshot pmap + register
+    4. restart game (address changes)
+    5. scan exact 100           <- find new HP address
+    6. pmsave s2.pmap 0xNEWADDR <- second snapshot
+    7. pscan 6 2048 50          <- cross-reference both sessions
 `)
 }
 
@@ -655,7 +686,7 @@ func cmdBuildPointerMap() {
 	}
 	fmt.Println("Building pointer map (this may take a while)...")
 	start := time.Now()
-	pm, err := BuildPointerMap(currentHandle, currentModules)
+	pm, err := BuildPointerMap(currentHandle, currentModules, currentPID)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
@@ -664,50 +695,180 @@ func cmdBuildPointerMap() {
 	fmt.Printf("Pointer map ready in %v (%d entries)\n", time.Since(start), len(pm.Entries))
 }
 
+// pmsave <file> <target_addr_hex>
+// Saves current pmap to disk and registers it as a session with the given target address.
+func cmdPmapSave(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: pmsave <file.pmap> <target_addr_hex>")
+		fmt.Println("  Builds pmap if needed, saves to file, registers as a pscan session")
+		return
+	}
+	if currentHandle == 0 {
+		fmt.Println("Not attached")
+		return
+	}
+
+	targetAddr, err := parseAddr(args[1])
+	if err != nil {
+		fmt.Println("Invalid address:", err)
+		return
+	}
+
+	// Build pmap if not already built
+	if pointerMap == nil {
+		fmt.Println("Building pointer map first...")
+		cmdBuildPointerMap()
+		if pointerMap == nil {
+			fmt.Println("Failed to build pointer map")
+			return
+		}
+	}
+
+	// Save to file
+	path := args[0]
+	if err := pointerMap.Save(path); err != nil {
+		fmt.Println("Save failed:", err)
+		return
+	}
+
+	// Register as session
+	pscanSessions = append(pscanSessions, PointerScanSession{
+		TargetAddr: targetAddr,
+		PMap:       pointerMap,
+		Label:      path,
+	})
+
+	Log.Info("pmsave: saved %s, target=0x%X, session count=%d", path, targetAddr, len(pscanSessions))
+	fmt.Printf("Saved %s (%d entries) | target=0x%X | session #%d registered\n",
+		path, len(pointerMap.Entries), targetAddr, len(pscanSessions))
+}
+
+// pmload <file> <target_addr_hex>
+// Loads a pmap file from disk and registers it as a session.
+func cmdPmapLoad(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: pmload <file.pmap> <target_addr_hex>")
+		return
+	}
+	targetAddr, err := parseAddr(args[1])
+	if err != nil {
+		fmt.Println("Invalid address:", err)
+		return
+	}
+	pm, err := LoadPointerMap(args[0])
+	if err != nil {
+		fmt.Println("Load failed:", err)
+		return
+	}
+	pscanSessions = append(pscanSessions, PointerScanSession{
+		TargetAddr: targetAddr,
+		PMap:       pm,
+		Label:      args[0],
+	})
+	Log.Info("pmload: loaded %s, target=0x%X, session count=%d", args[0], targetAddr, len(pscanSessions))
+	fmt.Printf("Loaded %s (%d entries, pid=%d, saved=%s) | target=0x%X | session #%d registered\n",
+		args[0], len(pm.Entries), pm.PID,
+		pm.CreatedAt.Format("2006-01-02 15:04:05"),
+		targetAddr, len(pscanSessions))
+}
+
+// pmsessions — list registered sessions
+func cmdPmapSessions() {
+	if len(pscanSessions) == 0 {
+		fmt.Println("No sessions registered. Use 'pmsave' or 'pmload' to add sessions.")
+		return
+	}
+	fmt.Printf("%-4s  %-14s  %-40s  %s\n", "#", "Target Addr", "File", "Entries")
+	fmt.Println(strings.Repeat("-", 75))
+	for i, s := range pscanSessions {
+		fmt.Printf("%-4d  0x%-12X  %-40s  %d\n", i+1, s.TargetAddr, s.Label, len(s.PMap.Entries))
+	}
+}
+
+// pmclear — clear all sessions
+func cmdPmapClear() {
+	pscanSessions = nil
+	pointerMap = nil
+	fmt.Println("All sessions cleared")
+}
+
+// pscan [depth] [max_offset] [max_results]
+// Runs multi-session pointer scan using all registered sessions.
 func cmdPointerScan(args []string, reader *bufio.Reader) {
 	if currentHandle == 0 {
 		fmt.Println("Not attached")
 		return
 	}
-	if len(args) == 0 {
-		fmt.Println("Usage: pscan <addr_hex> [depth] [max_offset] [max_results]")
+
+	// Need at least one session
+	if len(pscanSessions) == 0 {
+		fmt.Println("No sessions registered.")
+		fmt.Println("Workflow:")
+		fmt.Println("  1. Find target address (e.g. scan exact 100)")
+		fmt.Println("  2. pmsave session1.pmap 0xYOURADDR   <- saves pmap + registers session")
+		fmt.Println("  3. Restart game / change state so address moves")
+		fmt.Println("  4. Find new address of same value")
+		fmt.Println("  5. pmsave session2.pmap 0xNEWADDR    <- second session")
+		fmt.Println("  6. pscan [depth] [max_offset] [max_results]")
 		return
-	}
-	// Auto-build pointer map if not built yet
-	if pointerMap == nil {
-		fmt.Println("Pointer map not built yet — building it now...")
-		cmdBuildPointerMap()
-		if pointerMap == nil {
-			fmt.Println("Failed to build pointer map, aborting")
-			return
-		}
-	}
-	addr, err := parseAddr(args[0])
-	if err != nil {
-		fmt.Println("Invalid address:", err)
-		return
-	}
-	depth := 5
-	maxOffset := uintptr(2048)
-	maxResults := 100
-	if len(args) > 1 {
-		depth, _ = strconv.Atoi(args[1])
-	}
-	if len(args) > 2 {
-		v, _ := strconv.ParseUint(args[2], 0, 64)
-		maxOffset = uintptr(v)
-	}
-	if len(args) > 3 {
-		maxResults, _ = strconv.Atoi(args[3])
 	}
 
-	fmt.Printf("Pointer scanning for 0x%X (depth=%d, maxOffset=0x%X, max=%d)...\n",
-		addr, depth, maxOffset, maxResults)
+	depth := 5
+	maxOffset := uintptr(0x800) // 2048
+	maxResults := 100
+
+	if len(args) > 0 {
+		depth, _ = strconv.Atoi(args[0])
+	}
+	if len(args) > 1 {
+		v, _ := strconv.ParseUint(args[1], 0, 64)
+		maxOffset = uintptr(v)
+	}
+	if len(args) > 2 {
+		maxResults, _ = strconv.Atoi(args[2])
+	}
+
+	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d\n",
+		len(pscanSessions), depth, maxOffset, maxResults)
+	for i, s := range pscanSessions {
+		fmt.Printf("  [%d] %s -> target=0x%X (%d pmap entries)\n", i+1, s.Label, s.TargetAddr, len(s.PMap.Entries))
+	}
+
 	start := time.Now()
-	results := BFSPointerScan(currentHandle, pointerMap, currentModules, addr, depth, maxOffset, maxResults)
-	fmt.Printf("Found %d pointer chains in %v\n", len(results), time.Since(start))
+	results := MultiSessionPointerScan(PointerScanConfig{
+		Sessions:   pscanSessions,
+		MaxDepth:   depth,
+		MaxOffset:  maxOffset,
+		MaxResults: maxResults,
+	})
+	elapsed := time.Since(start)
+
+	fmt.Printf("\nFound %d pointer chain(s) in %v\n", len(results), elapsed)
+	if len(results) == 0 {
+		fmt.Println("No chains found. Try: more sessions, bigger depth/offset, or check target addresses.")
+		return
+	}
+	fmt.Println()
 	for i, r := range results {
-		fmt.Printf("[%d] %s\n", i+1, FormatPointerResult(r))
+		fmt.Printf("[%d] %s\n", i+1, r.Chain.String())
+	}
+
+	// Optionally verify chains against current process
+	if currentHandle != 0 && len(results) > 0 {
+		fmt.Println("\nVerifying chains against current process...")
+		for i, r := range results {
+			addr, ok := VerifyChain(currentHandle, currentModules, r.Chain)
+			if ok {
+				val, err := scanner.ReadCurrentValue(addr, currentDT)
+				if err == nil {
+					fmt.Printf("  [%d] OK -> 0x%X = %s\n", i+1, addr, val)
+				} else {
+					fmt.Printf("  [%d] OK -> 0x%X (read error: %v)\n", i+1, addr, err)
+				}
+			} else {
+				fmt.Printf("  [%d] BROKEN (chain invalid in current session)\n", i+1)
+			}
+		}
 	}
 }
 
