@@ -8,7 +8,7 @@ A Cheat Engine alternative written in Go — memory scanner, CE-style multi-sess
 
 ## Download
 
-Get the latest `memhacker.exe` from [Releases](https://github.com/gs-attripathi/memhacker/releases/latest).
+Get the latest `memhacker.exe` from the repo or [Releases](https://github.com/gs-attripathi/memhacker/releases/latest).
 
 Run as **Administrator** (required to read/write other process memory).
 
@@ -42,7 +42,9 @@ Cross-compile from macOS/Linux works fine — produces a single Windows `.exe`.
 ### Data Type
 | Command | Description |
 |---------|-------------|
-| `type <dt>` | Set scan type: i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 str bytes |
+| `type <dt>` | Set scan type: `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` `str` `bytes` |
+
+Default type is `i32`.
 
 ### Scanning
 | Command | Description |
@@ -63,26 +65,47 @@ Cross-compile from macOS/Linux works fine — produces a single Windows `.exe`.
 | `results [N]` | Show top N results |
 | `reset` | Clear scan results |
 
+### Address Aliases
+Instead of typing hex addresses every time, set a name once and use it everywhere.
+
+| Command | Description |
+|---------|-------------|
+| `alias hp 0x614DD58` | Set alias `hp` for address `0x614DD58` |
+| `alias` | List all aliases |
+| `alias hp` | Show single alias |
+| `unalias hp` | Remove alias |
+
+Once set, use the alias name in any command that takes an address:
+```
+alias hp 0x614DD58
+write hp 999
+freeze hp 999 MyHP
+pmsave s1.pmap hp
+read hp
+```
+
 ### Value Operations
 | Command | Description |
 |---------|-------------|
-| `read 0xADDR` | Read live value at address |
-| `write 0xADDR 999` | Write value |
-| `add 0xADDR label` | Add to address list |
+| `read <addr>` | Read live value at address (supports aliases) |
+| `write <addr> <val>` | Write value (supports aliases) |
+| `add <addr> [label]` | Add to address list |
 | `addrlist` | Show address list with live values |
 
 ### Freeze
 | Command | Description |
 |---------|-------------|
-| `freeze 0xADDR 999 HP` | Freeze address to value (50ms interval) |
+| `freeze <addr> <val> [label]` | Freeze address to value at 50ms interval (supports aliases) |
 | `unfreeze <id>` | Unfreeze by ID |
 | `frozen` | List frozen entries |
 
 ### Pointer Scanning (CE-style multi-session)
 
+The idea: scan the same value across multiple game sessions. Each session has a different address for the same data. Chains that resolve correctly in ALL sessions are real static pointers.
+
 | Command | Description |
 |---------|-------------|
-| `pmsave <file> <addr>` | Build pmap + save to file + register session |
+| `pmsave <file> <addr>` | Build pmap + save to file + register session (addr supports aliases) |
 | `pmload <file>` | Load saved pmap (target addr read from file) |
 | `pmsessions` | List registered sessions |
 | `pmclear` | Clear all sessions |
@@ -97,6 +120,19 @@ Auto-widens: if `exe` finds nothing → tries `game` → tries `all`.
 
 **Defaults:** depth=7, offset=5000, max=100
 
+### Pointer Results (save/load/verify)
+
+After finding pointer chains, save them to a file so you can use them across game restarts without running pscan again.
+
+| Command | Description |
+|---------|-------------|
+| `prsave <file.json>` | Save last pscan results to JSON file |
+| `prload <file.json> [addr]` | Load chains — if addr given, only MATCH chains kept in memory |
+| `prverify` | Re-verify chains against current process (shows current vs expected value) |
+| `prlist` | List current in-memory chains |
+| `prwrite <index> <val>` | Follow chain, write value once |
+| `prfreeze <index> <val>` | Follow chain, freeze value |
+
 ### Logging
 | Command | Description |
 |---------|-------------|
@@ -105,25 +141,49 @@ Auto-widens: if `exe` finds nothing → tries `game` → tries `all`.
 
 ---
 
-## Pointer Scan Workflow
+## Full Workflow
+
+### Step 1 — Find the pointer chain (do once)
 
 ```
-1. open game.exe
-2. scan exact 100           <- find target value (e.g. HP = 100)
-3. pmsave s1.pmap 0xADDR    <- save pmap + register session
-4. restart game (address will change)
-5. scan exact 100           <- find new address
-6. pmsave s2.pmap 0xADDR2   <- second session
-7. pmsave s3.pmap 0xADDR3   <- third session (more = fewer false positives)
-8. pscan                    <- cross-reference all sessions
+open game.exe
+type i32
+scan exact 100           <- your HP value
+next exact 85            <- take damage, scan new value
+                         <- repeat until 1-2 results
+alias hp 0x614DD58       <- give the address a name
+pmsave s1.pmap hp        <- save snapshot 1
+
+restart game
+scan exact 100
+next exact 85
+alias hp 0x72419D0
+pmsave s2.pmap hp        <- snapshot 2
+
+restart game again
+scan exact 100
+next exact 85
+alias hp 0x710E770
+pmsave s3.pmap hp        <- snapshot 3
+
+pscan                    <- cross-reference all 3 sessions
+prsave hp_chains.json    <- save the found chains
 ```
 
-Output:
-```
-[1] "mb_warband.exe"+3A8C0 -> [+18] -> [+C] -> [+4]
-```
+### Step 2 — Use chains every session
 
-This chain will resolve to the correct address on every game restart.
+```
+open game.exe
+scan exact 100
+next exact 85            <- find current HP address
+alias hp 0x8C3D4E0
+
+prload hp_chains.json hp <- loads chains, keeps only ones resolving to 0x8C3D4E0
+prsave hp_chains.json    <- overwrite with only working chains (gets cleaner each time)
+
+prwrite 1 999            <- set HP via chain 1
+prfreeze 1 999           <- or freeze it
+```
 
 ---
 
@@ -131,5 +191,7 @@ This chain will resolve to the correct address on every game restart.
 
 - Needs Administrator / elevated privileges
 - Supports 32-bit (WOW64) and 64-bit processes
-- System DLLs (kernel32, ntdll etc) and GPU driver DLLs (nvwgf2um, d3d* etc) are skipped as pointer base — game EXE/DLLs only
+- System DLLs (kernel32, ntdll etc) and GPU driver DLLs (nvwgf2um, d3d* etc) are skipped as pointer base
 - Log file: `memhacker.log` in same folder as the exe
+- pmap files are binary (~500MB for 32-bit games) — keep them somewhere safe
+- Pointer result files (`.json`) are small and human-readable
