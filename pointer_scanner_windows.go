@@ -81,8 +81,8 @@ type PointerScanConfig struct {
 	Sessions   []PointerScanSession
 	MaxDepth   int
 	MaxOffset  uintptr
-	MaxResults int    // final output cap; 0 = 100 default
-	BaseFilter string // "exe" (default), "game" (all non-system), "all"
+	MaxResults int
+	BaseFilter string
 }
 
 // ---------------------------------------------------------------------------
