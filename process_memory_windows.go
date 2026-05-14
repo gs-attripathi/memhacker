@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -74,9 +75,30 @@ type ProcessInfo struct {
 }
 
 type ModuleInfo struct {
-	Name string
-	Base uintptr
-	Size uint32
+	Name     string
+	Base     uintptr
+	Size     uint32
+	Path     string // full path to the DLL/EXE
+	IsSystem bool   // true if it's a Windows system DLL
+}
+
+// known system DLL paths (lowercased substrings)
+var systemPaths = []string{
+	`\windows\system32\`,
+	`\windows\syswow64\`,
+	`\windows\sysnative\`,
+	`\windows\winsxs\`,
+	`\windows\microsoft.net\`,
+}
+
+func classifyModule(path string) bool {
+	lower := strings.ToLower(path)
+	for _, sp := range systemPaths {
+		if strings.Contains(lower, sp) {
+			return true
+		}
+	}
+	return false
 }
 
 func ListProcesses() ([]ProcessInfo, error) {
@@ -218,10 +240,13 @@ func GetModules(pid uint32) ([]ModuleInfo, error) {
 
 	r1, _, _ := procModule32First.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))
 	for r1 != 0 {
+		path := windows.UTF16ToString(entry.ExePath[:])
 		mods = append(mods, ModuleInfo{
-			Name: windows.UTF16ToString(entry.Module[:]),
-			Base: entry.ModBaseAddr,
-			Size: entry.ModBaseSize,
+			Name:     windows.UTF16ToString(entry.Module[:]),
+			Base:     entry.ModBaseAddr,
+			Size:     entry.ModBaseSize,
+			Path:     path,
+			IsSystem: classifyModule(path),
 		})
 		entry.Size = uint32(unsafe.Sizeof(entry))
 		r1, _, _ = procModule32Next.Call(uintptr(snap), uintptr(unsafe.Pointer(&entry)))

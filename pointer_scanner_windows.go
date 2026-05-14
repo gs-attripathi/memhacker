@@ -446,6 +446,10 @@ func findModuleByAddr(modules []ModuleInfo, addr uintptr) *ModuleInfo {
 	for i := range modules {
 		m := &modules[i]
 		if addr >= m.Base && addr < m.Base+uintptr(m.Size) {
+			// skip system DLLs as base — static ptr inside kernel32 etc is useless
+			if m.IsSystem {
+				return nil
+			}
 			return m
 		}
 	}

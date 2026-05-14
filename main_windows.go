@@ -188,7 +188,7 @@ POINTER SCANNING (CE-style multi-session)
 
   pscan [depth] [offset] [max]  - run pointer scan across ALL registered sessions
                                   only chains valid in every session are returned
-                                  defaults: depth=5 offset=0x800 max=100
+                                  defaults: depth=7 offset=5000 max=100
                                   e.g: pscan 7 4096 200
 
   WORKFLOW:
@@ -824,8 +824,8 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		return
 	}
 
-	depth := 5
-	maxOffset := uintptr(0x800) // 2048
+	depth := 7
+	maxOffset := uintptr(5000)
 	maxResults := 100
 
 	if len(args) > 0 {
@@ -888,11 +888,25 @@ func cmdModules() {
 		fmt.Println("Not attached")
 		return
 	}
-	fmt.Printf("%-40s  %-18s  %s\n", "Module", "Base", "Size")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Printf("%-40s  %-8s  %-10s  %s\n", "Module", "Size(KB)", "Type", "Path")
+	fmt.Println(strings.Repeat("-", 100))
 	for _, m := range currentModules {
-		fmt.Printf("%-40s  0x%-16X  %d KB\n", m.Name, m.Base, m.Size/1024)
+		kind := "GAME"
+		if m.IsSystem {
+			kind = "SYSTEM"
+		}
+		fmt.Printf("%-40s  %-8d  %-10s  %s\n", m.Name, m.Size/1024, kind, m.Path)
 	}
+	// summary
+	sys, game := 0, 0
+	for _, m := range currentModules {
+		if m.IsSystem {
+			sys++
+		} else {
+			game++
+		}
+	}
+	fmt.Printf("\nTotal: %d modules (%d game/unknown, %d system)\n", len(currentModules), game, sys)
 }
 
 func cmdReset() {
