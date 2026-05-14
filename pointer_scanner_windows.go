@@ -212,9 +212,16 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32) (*
 	go func() { wg.Wait(); close(resultChan) }()
 
 	var all []ptrEntry
+	total := len(regions)
+	done := 0
 	for batch := range resultChan {
 		all = append(all, batch...)
+		done++
+		if done%50 == 0 || done == total {
+			fmt.Printf("\r  scanning regions... %d/%d (%d pointers found)", done, total, len(all))
+		}
 	}
+	fmt.Println()
 
 	// sort by value for binary search during scan
 	sort.Slice(all, func(i, j int) bool { return all[i].value < all[j].value })
@@ -385,6 +392,8 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 			break
 		}
 
+		fmt.Printf("  [depth %d/%d] queue=%d found=%d...\n", depth+1, maxDepth, len(queue), len(results))
+
 		var nextQueue []qItem
 		var nextMu sync.Mutex
 
@@ -456,6 +465,7 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 			}()
 		}
 		wg.Wait()
+		fmt.Printf("  [depth %d/%d] done — found %d chains so far, next queue=%d\n", depth+1, maxDepth, len(results), len(nextQueue))
 		queue = nextQueue
 	}
 	return results
