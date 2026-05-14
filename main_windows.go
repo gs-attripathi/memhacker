@@ -215,7 +215,9 @@ POINTER SCANNING (CE-style multi-session)
 
 POINTER RESULTS (save/load/verify chains)
   prsave <file.json>            - save last pscan results to JSON file
-  prload <file.json>            - load saved chains + auto-verify against current process
+  prload <file.json> [addr]     - load saved chains
+                                  addr = current session address (chain must resolve to it)
+                                  e.g: prload hp.json 0x614DD58
   prverify                      - re-verify loaded/last chains (use after game restart)
   prlist                        - list current in-memory chains
   prwrite <index> <value>       - follow chain, write value once  (e.g: prwrite 1 999)

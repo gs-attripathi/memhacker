@@ -164,11 +164,13 @@ func cmdPointerResultsSave(args []string) {
 	Log.Info("prsave: saved %d chains to %s", len(lastPscanResults), args[0])
 }
 
-// prload <file> — load and verify saved pointer results
+// prload <file> [expected_addr_hex]
+// Loads saved chains. If expected_addr given, verifies each chain resolves to that address.
 func cmdPointerResultsLoad(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: prload <file.json>")
-		fmt.Println("  Loads saved pointer chains and verifies them against the current process")
+		fmt.Println("Usage: prload <file.json> [expected_addr_hex]")
+		fmt.Println("  expected_addr: the address you found this session (e.g. 0x614DD58)")
+		fmt.Println("  Chain must resolve to this address to be considered valid")
 		return
 	}
 	prf, chains, err := LoadPointerResults(args[0])
@@ -184,24 +186,56 @@ func cmdPointerResultsLoad(args []string) {
 	fmt.Printf("  DataType: %s\n", prf.DataType)
 	fmt.Printf("  Chains:   %d\n\n", len(chains))
 
-	// Rebuild as PointerResult slice and store for verify/freeze
 	lastLoadedFile = prf
 	lastPscanResults = make([]PointerResult, len(chains))
 	for i, c := range chains {
 		lastPscanResults[i] = PointerResult{Chain: c}
 	}
 
-	// Auto-verify if attached
-	if currentHandle != 0 {
-		cmdPointerResultsVerify(nil)
-	} else {
-		fmt.Println("Not attached to any process. Use 'open <game>' then 'prverify' to verify.")
-		for i, c := range chains {
-			label := prf.Chains[i].Label
-			if label == "" {
-				label = fmt.Sprintf("chain%d", i+1)
+	// If expected address given, verify chains resolve to it
+	if len(args) >= 2 && currentHandle != 0 {
+		expectedAddr, err := parseAddr(args[1])
+		if err != nil {
+			fmt.Println("Invalid address:", err)
+			return
+		}
+		fmt.Printf("Verifying chains resolve to 0x%X...\n", expectedAddr)
+		fmt.Printf("%-5s  %-10s  %-20s  %s\n", "#", "Status", "Resolved To", "Chain")
+		fmt.Println(strings.Repeat("-", 90))
+
+		valid := 0
+		invalid := 0
+		for i, r := range lastPscanResults {
+			addr, ok := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
+			if ok && addr == expectedAddr {
+				fmt.Printf("%-5d  %-10s  0x%-18X  %s\n", i+1, "MATCH", addr, r.Chain.String())
+				valid++
+			} else if ok {
+				fmt.Printf("%-5d  %-10s  0x%-18X  %s\n", i+1, "WRONG ADDR", addr, r.Chain.String())
+				invalid++
+			} else {
+				fmt.Printf("%-5d  %-10s  %-20s  %s\n", i+1, "BROKEN", "-", r.Chain.String())
+				invalid++
 			}
-			fmt.Printf("  [%d] %s  %s\n", i+1, label, c.String())
+		}
+		fmt.Printf("\n%d chains match address 0x%X, %d don't\n", valid, expectedAddr, invalid)
+		fmt.Println("Use chains with MATCH status — they are confirmed valid for this session")
+		Log.Info("prload verify: %d match 0x%X, %d invalid", valid, expectedAddr, invalid)
+	} else if len(args) >= 2 && currentHandle == 0 {
+		fmt.Println("Not attached to process — skipping address verification")
+		fmt.Println("Use 'open <game>' first, then run: prload", args[0], args[1])
+		for i, c := range chains {
+			fmt.Printf("  [%d] %s\n", i+1, c.String())
+		}
+	} else {
+		// No expected addr — just show chains and auto-verify if attached
+		if currentHandle != 0 {
+			cmdPointerResultsVerify(nil)
+		} else {
+			fmt.Println("Tip: prload <file> <current_addr>  to verify chains match a specific address")
+			for i, c := range chains {
+				fmt.Printf("  [%d] %s\n", i+1, c.String())
+			}
 		}
 	}
 	Log.Info("prload: loaded %d chains from %s", len(chains), args[0])
