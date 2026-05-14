@@ -215,12 +215,12 @@ POINTER SCANNING (CE-style multi-session)
   pmsessions                    - list all registered sessions
   pmclear                       - clear all sessions + pmap
 
-  pscan [depth] [offset] [max] [filter]
+  pscan [depth] [offset] [max] [filter] [chaincap]
                                 - run pointer scan across ALL registered sessions
                                   filter: exe (default), game, all
-                                  auto-widens: exe -> game -> all if no results
+                                  chaincap: max chains per session (default 10M)
                                   defaults: depth=7 offset=5000 max=100
-
+                                  e.g: pscan 5 4000 100 exe 1000000
 POINTER RESULTS (save/load/verify chains)
   prsave <file.json>            - save last pscan results to JSON file
   prload <file.json> [addr]     - load saved chains
@@ -934,7 +934,8 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	depth := 7
 	maxOffset := uintptr(5000)
 	maxResults := 100
-	baseFilter := "" // default = "exe", auto-widens if needed
+	baseFilter := ""
+	chainCap := 0 // 0 = use default (10M)
 
 	if len(args) > 0 {
 		depth, _ = strconv.Atoi(args[0])
@@ -947,7 +948,10 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		maxResults, _ = strconv.Atoi(args[2])
 	}
 	if len(args) > 3 {
-		baseFilter = strings.ToLower(args[3]) // "exe", "game", "all"
+		baseFilter = strings.ToLower(args[3])
+	}
+	if len(args) > 4 {
+		chainCap, _ = strconv.Atoi(args[4])
 	}
 
 	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d\n",
@@ -963,6 +967,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		MaxOffset:  maxOffset,
 		MaxResults: maxResults,
 		BaseFilter: baseFilter,
+		ChainCap:   chainCap,
 	})
 	elapsed := time.Since(start)
 

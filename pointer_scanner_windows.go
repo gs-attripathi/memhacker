@@ -83,6 +83,7 @@ type PointerScanConfig struct {
 	MaxOffset  uintptr
 	MaxResults int
 	BaseFilter string
+	ChainCap   int // max chains per session, 0 = default (10M)
 }
 
 // ---------------------------------------------------------------------------
@@ -406,7 +407,7 @@ func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
 const bfsHardCap  = 10_000_000 // max chains per session (CE default is ~10k but we keep more for cross-ref)
 const bfsQueueCap = 2_000_000  // max queue per depth level
 
-func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string) []PointerChain {
+func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, hardCap, queueCap int) []PointerChain {
 	type qItem struct {
 		addr    uintptr   // memory address to look backwards from
 		offsets []uintptr // chain offsets built so far (innermost first)
@@ -454,34 +455,33 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 						newOffsets[0] = offset
 						copy(newOffsets[1:], item.offsets)
 
-						if mod := findStaticModule(pm.Modules, p.addr, filter); mod != nil {
-							mu.Lock()
-							if bfsHardCap == 0 || len(results) < bfsHardCap {
-								results = append(results, PointerChain{
-									BaseModule: mod.Name,
-									BaseOffset: p.addr - mod.Base,
-									Offsets:    newOffsets,
-								})
-							}
-							mu.Unlock()
-						} else {
-							// Not static yet — add to next BFS level
-							nextMu.Lock()
-							nextQueue = append(nextQueue, qItem{
-								addr:    p.addr,
-								offsets: newOffsets,
+					if mod := findStaticModule(pm.Modules, p.addr, filter); mod != nil {
+						mu.Lock()
+						if hardCap == 0 || len(results) < hardCap {
+							results = append(results, PointerChain{
+								BaseModule: mod.Name,
+								BaseOffset: p.addr - mod.Base,
+								Offsets:    newOffsets,
 							})
-							nextMu.Unlock()
 						}
-					} // end for ptrs
-				} // end for jobs
+						mu.Unlock()
+					} else {
+						nextMu.Lock()
+						nextQueue = append(nextQueue, qItem{
+							addr:    p.addr,
+							offsets: newOffsets,
+						})
+						nextMu.Unlock()
+					}
+				} // end for ptrs
+			} // end for jobs
 			}()
 		}
 		wg.Wait()
 
-		if len(nextQueue) > 0 && bfsQueueCap > 0 && len(nextQueue) > bfsQueueCap {
-			fmt.Printf("  [WARN] queue capped at %d (was %d)\n", bfsQueueCap, len(nextQueue))
-			nextQueue = nextQueue[:bfsQueueCap]
+		if len(nextQueue) > 0 && queueCap > 0 && len(nextQueue) > queueCap {
+			fmt.Printf("  [WARN] queue capped at %d (was %d)\n", queueCap, len(nextQueue))
+			nextQueue = nextQueue[:queueCap]
 		}
 		queue = nextQueue
 	}
@@ -551,7 +551,7 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	fmt.Printf("\nBase filter: %s\n", filterLabel(filter))
 	Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d", filter, cfg.MaxDepth, cfg.MaxOffset, maxResults)
 
-	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter)
+	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, cfg.ChainCap)
 
 	if len(results) > 0 {
 		Log.Info("MultiSessionPointerScan: %d results with filter=%s", len(results), filter)
@@ -582,7 +582,12 @@ func filterLabel(f string) string {
 	return f
 }
 
-func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string) []PointerResult {
+func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string, chainCap int) []PointerResult {
+	hCap := chainCap
+	if hCap <= 0 {
+		hCap = bfsHardCap
+	}
+	qCap := hCap * 2 // queue cap = 2x chain cap
 	allChains := make([]map[string]PointerChain, len(sessions))
 
 	for idx, sess := range sessions {
@@ -600,7 +605,7 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 		var sessionMap map[string]PointerChain
 		for ti, target := range targets {
 			fmt.Printf("    target [%d/%d] 0x%X\n", ti+1, len(targets), target)
-			chains := bfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter)
+			chains := bfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, hCap, qCap)
 			m := make(map[string]PointerChain, len(chains))
 			for _, c := range chains {
 				m[c.Key()] = c
