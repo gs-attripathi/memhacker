@@ -222,7 +222,8 @@ POINTER RESULTS (save/load/verify chains)
   prload <file.json> [addr]     - load saved chains
                                   addr = current session address (chain must resolve to it)
                                   e.g: prload hp.json 0x614DD58
-  prverify                      - re-verify loaded/last chains (use after game restart)
+  prverify [addr]               - re-verify chains, optional addr = must resolve to this
+                                  e.g: prverify 0x614DD58  or  prverify hp (alias)
   prlist                        - list current in-memory chains
   prwrite <index> <value>       - follow chain, write value once  (e.g: prwrite 1 999)
   prfreeze <index> <value>      - follow chain, freeze value      (e.g: prfreeze 1 999)

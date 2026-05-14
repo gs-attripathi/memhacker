@@ -246,7 +246,8 @@ func cmdPointerResultsLoad(args []string) {
 	Log.Info("prload: loaded %d chains from %s", len(chains), args[0])
 }
 
-// prverify — verify loaded/last pscan chains against current process
+// prverify [addr] — verify chains against current process
+// If addr given, only chains resolving to that address are OK
 func cmdPointerResultsVerify(args []string) {
 	if currentHandle == 0 {
 		fmt.Println("Not attached. Use 'open <game>' first.")
@@ -257,7 +258,23 @@ func cmdPointerResultsVerify(args []string) {
 		return
 	}
 
-	// Load expected values if we have them (from prload)
+	// Optional: expected address to match against
+	var expectedAddr uintptr
+	hasExpected := false
+	if len(args) > 0 && args[0] != "" {
+		addr, err := resolveAddr(args[0])
+		if err != nil {
+			fmt.Println("Invalid address:", err)
+			return
+		}
+		expectedAddr = addr
+		hasExpected = true
+		fmt.Printf("Verifying %d chains — must resolve to 0x%X\n", len(lastPscanResults), expectedAddr)
+	} else {
+		fmt.Printf("Verifying %d chains against current process...\n", len(lastPscanResults))
+	}
+
+	// Load expected values from file if available
 	expectedVals := make(map[int]string)
 	if lastLoadedFile != nil {
 		for i, sc := range lastLoadedFile.Chains {
@@ -267,20 +284,27 @@ func cmdPointerResultsVerify(args []string) {
 		}
 	}
 
-	fmt.Printf("Verifying %d chains against current process...\n", len(lastPscanResults))
-	fmt.Printf("%-5s  %-8s  %-20s  %-12s  %-12s  %s\n", "#", "Status", "Address", "Current", "Expected", "Chain")
+	fmt.Printf("%-5s  %-10s  %-20s  %-12s  %-12s  %s\n", "#", "Status", "Address", "Current", "Expected", "Chain")
 	fmt.Println(strings.Repeat("-", 100))
 
-	ok := 0
-	broken := 0
-	mismatch := 0
+	var matchedResults []PointerResult
+	ok, broken, mismatch, wrongAddr := 0, 0, 0, 0
+
 	for i, r := range lastPscanResults {
 		addr, valid := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
 		if !valid {
-			fmt.Printf("%-5d  %-8s  %-20s  %-12s  %-12s  %s\n", i+1, "BROKEN", "-", "-", "-", r.Chain.String())
+			fmt.Printf("%-5d  %-10s  %-20s  %-12s  %-12s  %s\n", i+1, "BROKEN", "-", "-", "-", r.Chain.String())
 			broken++
 			continue
 		}
+
+		// If expected address given, check it matches
+		if hasExpected && addr != expectedAddr {
+			fmt.Printf("%-5d  %-10s  0x%-18X  %-12s  %-12s  %s\n", i+1, "WRONG ADDR", addr, "-", "-", r.Chain.String())
+			wrongAddr++
+			continue
+		}
+
 		currentVal, err := scanner.ReadCurrentValue(addr, currentDT)
 		if err != nil {
 			currentVal = "read err"
@@ -293,17 +317,26 @@ func cmdPointerResultsVerify(args []string) {
 		} else {
 			ok++
 		}
-		fmt.Printf("%-5d  %-8s  0x%-18X  %-12s  %-12s  %s\n",
+		fmt.Printf("%-5d  %-10s  0x%-18X  %-12s  %-12s  %s\n",
 			i+1, status, addr, currentVal, expected, r.Chain.String())
+		matchedResults = append(matchedResults, r)
 	}
-	fmt.Printf("\nResult: %d OK, %d mismatch, %d broken\n", ok, mismatch, broken)
+
+	fmt.Printf("\nResult: %d OK, %d mismatch, %d wrong addr, %d broken\n", ok, mismatch, wrongAddr, broken)
+
+	// If address filter was used, update in-memory to matched only
+	if hasExpected && len(matchedResults) > 0 {
+		lastPscanResults = matchedResults
+		fmt.Printf("In-memory updated to %d matched chains\n", len(matchedResults))
+		fmt.Println("Tip: prsave <file.json>  <- save only working chains")
+	}
 	if mismatch > 0 {
-		fmt.Println("MISMATCH = chain valid but value changed (normal if you moved to different save/character)")
+		fmt.Println("MISMATCH = chain valid but value changed (different save/character)")
 	}
 	if broken > 0 {
-		fmt.Println("BROKEN = chain no longer resolves (game updated, or wrong game version)")
+		fmt.Println("BROKEN = chain no longer resolves (game updated?)")
 	}
-	Log.Info("prverify: %d OK, %d mismatch, %d broken", ok, mismatch, broken)
+	Log.Info("prverify: %d OK, %d mismatch, %d wrongAddr, %d broken", ok, mismatch, wrongAddr, broken)
 }
 
 // prlabel <index> <label> — label a chain for easier identification

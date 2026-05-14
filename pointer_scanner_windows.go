@@ -511,34 +511,26 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		seen[key] = true
 	}
 
-	// Try with current filter, auto-widen if needed
-	filters := []string{filter}
+	// Try with current filter only — no auto-widen (causes noise from runtime DLLs)
+	fmt.Printf("\nBase filter: %s\n", filterLabel(filter))
+	Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d", filter, cfg.MaxDepth, cfg.MaxOffset, maxResults)
+
+	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter)
+
+	if len(results) > 0 {
+		Log.Info("MultiSessionPointerScan: %d results with filter=%s", len(results), filter)
+		return results
+	}
+
+	// No results — tell user what to try, don't auto-widen
+	fmt.Println("  No chains found.")
 	if filter == "exe" {
-		filters = append(filters, "game", "all")
+		fmt.Println("  Tip: exe-anchored chains need more depth. Try:")
+		fmt.Println("       pscan 9 5000 100        <- more depth")
+		fmt.Println("       pscan 7 5000 100 game   <- include game DLLs (may include runtime DLLs)")
 	} else if filter == "game" {
-		filters = append(filters, "all")
+		fmt.Println("  Tip: try pscan 7 5000 100 all  (includes GPU/driver DLLs, less reliable)")
 	}
-
-	for _, f := range filters {
-		fmt.Printf("\nBase filter: %s\n", filterLabel(f))
-		Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d", f, cfg.MaxDepth, cfg.MaxOffset, maxResults)
-
-		results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, f)
-
-		if len(results) > 0 {
-			Log.Info("MultiSessionPointerScan: %d results with filter=%s", len(results), f)
-			return results
-		}
-
-		// No results — try broader filter
-		if f == "exe" {
-			fmt.Println("  No chains anchored in main EXE — retrying with game DLLs...")
-		} else if f == "game" {
-			fmt.Println("  No chains in game DLLs either — retrying with all modules...")
-			fmt.Println("  (results may include GPU/driver DLLs — less reliable)")
-		}
-	}
-
 	return nil
 }
 
