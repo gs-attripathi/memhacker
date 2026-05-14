@@ -23,11 +23,12 @@ type PointerResultsFile struct {
 }
 
 type SavedChain struct {
-	BaseModule string   `json:"base_module"`
-	BaseOffset string   `json:"base_offset"` // hex string
-	Offsets    []string `json:"offsets"`     // hex strings
-	Label      string   `json:"label"`       // user label e.g. "HP", "Stamina"
-	Notes      string   `json:"notes"`       // e.g. "verified 3 sessions"
+	BaseModule    string   `json:"base_module"`
+	BaseOffset    string   `json:"base_offset"`
+	Offsets       []string `json:"offsets"`
+	Label         string   `json:"label"`
+	Notes         string   `json:"notes"`
+	ExpectedValue string   `json:"expected_value"` // value at time of prsave
 }
 
 func chainToSaved(c PointerChain, label string) SavedChain {
@@ -74,10 +75,21 @@ func savedToChain(s SavedChain) (PointerChain, error) {
 }
 
 // SavePointerResults saves pscan results to a JSON file
-func SavePointerResults(path string, results []PointerResult, gameExe string, is32Bit bool, dt DataType) error {
+func SavePointerResults(path string, results []PointerResult, gameExe string, is32Bit bool, dt DataType, handle windows.Handle, modules []ModuleInfo) error {
 	chains := make([]SavedChain, len(results))
 	for i, r := range results {
-		chains[i] = chainToSaved(r.Chain, "")
+		sc := chainToSaved(r.Chain, "")
+		// Read current value at this chain's address so we can verify later
+		if handle != 0 {
+			addr, ok := VerifyChain(handle, modules, r.Chain, is32Bit)
+			if ok {
+				val, err := ReadMemory(handle, addr, dataTypeSize(dt))
+				if err == nil {
+					sc.ExpectedValue = decodeValue(dt, val)
+				}
+			}
+		}
+		chains[i] = sc
 	}
 	prf := PointerResultsFile{
 		Version:  AppVersion,
@@ -123,7 +135,8 @@ func LoadPointerResults(path string) (*PointerResultsFile, []PointerChain, error
 
 // --- Commands ---
 
-var lastPscanResults []PointerResult // in-memory last pscan output
+var lastPscanResults []PointerResult     // in-memory last pscan output
+var lastLoadedFile   *PointerResultsFile // last prload file, for expected value comparison
 
 // prsave <file> — save last pscan results to file
 func cmdPointerResultsSave(args []string) {
@@ -143,7 +156,7 @@ func cmdPointerResultsSave(args []string) {
 			break
 		}
 	}
-	if err := SavePointerResults(args[0], lastPscanResults, gameExe, currentIs32Bit, currentDT); err != nil {
+	if err := SavePointerResults(args[0], lastPscanResults, gameExe, currentIs32Bit, currentDT, currentHandle, currentModules); err != nil {
 		fmt.Println("Save failed:", err)
 		return
 	}
@@ -172,6 +185,7 @@ func cmdPointerResultsLoad(args []string) {
 	fmt.Printf("  Chains:   %d\n\n", len(chains))
 
 	// Rebuild as PointerResult slice and store for verify/freeze
+	lastLoadedFile = prf
 	lastPscanResults = make([]PointerResult, len(chains))
 	for i, c := range chains {
 		lastPscanResults[i] = PointerResult{Chain: c}
@@ -204,29 +218,53 @@ func cmdPointerResultsVerify(args []string) {
 		return
 	}
 
+	// Load expected values if we have them (from prload)
+	expectedVals := make(map[int]string)
+	if lastLoadedFile != nil {
+		for i, sc := range lastLoadedFile.Chains {
+			if sc.ExpectedValue != "" {
+				expectedVals[i] = sc.ExpectedValue
+			}
+		}
+	}
+
 	fmt.Printf("Verifying %d chains against current process...\n", len(lastPscanResults))
-	fmt.Printf("%-5s  %-8s  %-20s  %-12s  %s\n", "#", "Status", "Address", "Value", "Chain")
-	fmt.Println(strings.Repeat("-", 90))
+	fmt.Printf("%-5s  %-8s  %-20s  %-12s  %-12s  %s\n", "#", "Status", "Address", "Current", "Expected", "Chain")
+	fmt.Println(strings.Repeat("-", 100))
 
 	ok := 0
 	broken := 0
+	mismatch := 0
 	for i, r := range lastPscanResults {
 		addr, valid := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
-		if valid {
-			val, err := scanner.ReadCurrentValue(addr, currentDT)
-			valStr := val
-			if err != nil {
-				valStr = "read error"
-			}
-			fmt.Printf("%-5d  %-8s  0x%-18X  %-12s  %s\n", i+1, "OK", addr, valStr, r.Chain.String())
-			ok++
-		} else {
-			fmt.Printf("%-5d  %-8s  %-20s  %-12s  %s\n", i+1, "BROKEN", "-", "-", r.Chain.String())
+		if !valid {
+			fmt.Printf("%-5d  %-8s  %-20s  %-12s  %-12s  %s\n", i+1, "BROKEN", "-", "-", "-", r.Chain.String())
 			broken++
+			continue
 		}
+		currentVal, err := scanner.ReadCurrentValue(addr, currentDT)
+		if err != nil {
+			currentVal = "read err"
+		}
+		expected := expectedVals[i]
+		status := "OK"
+		if expected != "" && currentVal != expected {
+			status = "MISMATCH"
+			mismatch++
+		} else {
+			ok++
+		}
+		fmt.Printf("%-5d  %-8s  0x%-18X  %-12s  %-12s  %s\n",
+			i+1, status, addr, currentVal, expected, r.Chain.String())
 	}
-	fmt.Printf("\nResult: %d OK, %d broken\n", ok, broken)
-	Log.Info("prverify: %d OK, %d broken", ok, broken)
+	fmt.Printf("\nResult: %d OK, %d mismatch, %d broken\n", ok, mismatch, broken)
+	if mismatch > 0 {
+		fmt.Println("MISMATCH = chain valid but value changed (normal if you moved to different save/character)")
+	}
+	if broken > 0 {
+		fmt.Println("BROKEN = chain no longer resolves (game updated, or wrong game version)")
+	}
+	Log.Info("prverify: %d OK, %d mismatch, %d broken", ok, mismatch, broken)
 }
 
 // prlabel <index> <label> — label a chain for easier identification
