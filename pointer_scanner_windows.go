@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,14 +208,22 @@ func isSystemModuleName(name string) bool {
 		"cfgmgr32.dll", "win32u.dll", "gdi32full.dll", "msvcp_win.dll",
 		"ucrtbase.dll", "combase.dll", "shcore.dll", "wintypes.dll",
 	}
-	lower := name
-	for i := range lower {
-		if lower[i] >= 'A' && lower[i] <= 'Z' {
-			lower = lower[:i] + string(lower[i]+32) + lower[i+1:]
-		}
+	// GPU driver DLLs — not system but not game either, skip as base
+	driverPrefixes := []string{
+		"nvwgf2um", "nvwgf2umx", "nvcuda", "nvopencl", // NVIDIA
+		"amdxc",  "atig6pxx", "atidxx",                // AMD
+		"igdumdim", "ig75icd",                          // Intel
+		"d3d9", "d3d10", "d3d11", "d3d12",             // D3D runtime
+		"dxgi", "dxcore",
 	}
+	lower := strings.ToLower(name)
 	for _, s := range systemNames {
 		if lower == s {
+			return true
+		}
+	}
+	for _, p := range driverPrefixes {
+		if strings.HasPrefix(lower, p) {
 			return true
 		}
 	}
