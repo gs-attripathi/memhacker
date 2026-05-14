@@ -271,7 +271,13 @@ func (c PointerChain) Key() string {
 func (c PointerChain) String() string {
 	s := fmt.Sprintf(`"%s"+%X`, c.BaseModule, c.BaseOffset)
 	for _, o := range c.Offsets {
-		s += fmt.Sprintf(" -> [+%X]", o)
+		// treat as signed — if top bit set it's negative
+		signed := int64(o)
+		if signed < 0 {
+			s += fmt.Sprintf(" -> [-%X]", uint64(-signed))
+		} else {
+			s += fmt.Sprintf(" -> [+%X]", o)
+		}
 	}
 	return s
 }
@@ -395,18 +401,31 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 			go func() {
 				defer wg.Done()
 				for item := range jobs {
-					// scan range: [item.targetAddr - maxOffset, item.targetAddr]
+					// scan range: [targetAddr - maxOffset, targetAddr + maxOffset]
 					scanFrom := uintptr(0)
 					if item.targetAddr > maxOffset {
 						scanFrom = item.targetAddr - maxOffset
 					}
-					ptrs := pm.FindPointersTo(scanFrom, item.targetAddr-scanFrom+maxOffset)
+					scanRange := (item.targetAddr - scanFrom) + maxOffset // covers both directions
+					ptrs := pm.FindPointersTo(scanFrom, scanRange)
 
 					for _, p := range ptrs {
-						if p.value > item.targetAddr {
+						// compute signed difference
+						var offset uintptr
+						if p.value <= item.targetAddr {
+							offset = item.targetAddr - p.value
+						} else {
+							diff := p.value - item.targetAddr
+							if diff > maxOffset {
+								continue // too far in positive direction
+							}
+							// store as two's-complement negative
+							offset = uintptr(^diff + 1)
+						}
+						// also skip positive offsets beyond maxOffset
+						if p.value <= item.targetAddr && offset > maxOffset {
 							continue
 						}
-						offset := item.targetAddr - p.value
 
 						newOffsets := make([]uintptr, len(item.offsets)+1)
 						newOffsets[0] = offset
@@ -475,6 +494,8 @@ func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain
 		if err != nil || ptr == 0 {
 			return 0, false
 		}
+		// offset stored as two's complement — adding it works correctly
+		// whether positive or negative due to unsigned wrap-around
 		addr = ptr + offset
 	}
 	return addr, true
