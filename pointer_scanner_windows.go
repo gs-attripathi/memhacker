@@ -435,7 +435,11 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 	queue := []qItem{{targetAddr: target}}
 
 	for depth := 0; depth < maxDepth; depth++ {
-		if len(queue) == 0 || len(results) >= maxResults {
+		if len(queue) == 0 {
+			break
+		}
+		// maxResults=0 means no cap
+		if maxResults > 0 && len(results) >= maxResults {
 			break
 		}
 
