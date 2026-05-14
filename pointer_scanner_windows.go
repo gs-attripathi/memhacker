@@ -341,21 +341,29 @@ type PointerScanConfig struct {
 }
 
 // MultiSessionPointerScan finds pointer chains that resolve correctly
-// across ALL provided sessions. This is the key insight: a chain that
-// works for session1(addr=0xAAA) AND session2(addr=0xBBB) is a real
-// static pointer — not a coincidental match.
+// across ALL provided sessions.
 func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	if len(cfg.Sessions) == 0 {
 		return nil
 	}
+
+	// Warn about duplicate sessions
+	seen := map[string]bool{}
+	for _, s := range cfg.Sessions {
+		key := fmt.Sprintf("%s_%X", s.Label, s.TargetAddr)
+		if seen[key] {
+			fmt.Printf("  [WARN] Duplicate session detected: %s target=0x%X — remove it with pmclear and re-add\n", s.Label, s.TargetAddr)
+		}
+		seen[key] = true
+	}
+
 	Log.Info("MultiSessionPointerScan: %d sessions, depth=%d, maxOffset=0x%X, maxResults=%d",
 		len(cfg.Sessions), cfg.MaxDepth, cfg.MaxOffset, cfg.MaxResults)
 
-	// Run BFS for each session independently, collect chain keys
+	// Run BFS for each session independently — no per-session cap, collect all chains
 	type sessionChains struct {
-		chains map[string]PointerChain // key -> chain
+		chains map[string]PointerChain
 	}
-
 	allSessionChains := make([]sessionChains, len(cfg.Sessions))
 	var wg sync.WaitGroup
 
@@ -364,7 +372,8 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		go func(idx int, s PointerScanSession) {
 			defer wg.Done()
 			Log.Info("  Session[%d] %s: scanning from 0x%X", idx, s.Label, s.TargetAddr)
-			chains := bfsSingleSession(s.PMap, s.TargetAddr, cfg.MaxDepth, cfg.MaxOffset, cfg.MaxResults*10)
+			// No cap on per-session results — collect everything, cross-reference will filter
+			chains := bfsSingleSession(s.PMap, s.TargetAddr, cfg.MaxDepth, cfg.MaxOffset, 0)
 			m := make(map[string]PointerChain, len(chains))
 			for _, c := range chains {
 				m[c.Key()] = c
@@ -376,7 +385,6 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	wg.Wait()
 
 	// Cross-reference: keep only chains present in ALL sessions
-	// Start with session 0's chains, then intersect with rest
 	candidates := allSessionChains[0].chains
 	for i := 1; i < len(allSessionChains); i++ {
 		next := make(map[string]PointerChain)
@@ -391,12 +399,9 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	var results []PointerResult
 	for _, c := range candidates {
 		results = append(results, PointerResult{Chain: c})
-		if len(results) >= cfg.MaxResults {
-			break
-		}
 	}
 
-	// Sort by chain length then base offset for deterministic output
+	// Sort by chain length then base offset
 	sort.Slice(results, func(i, j int) bool {
 		ci, cj := results[i].Chain, results[j].Chain
 		if len(ci.Offsets) != len(cj.Offsets) {
@@ -405,12 +410,19 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		return ci.BaseOffset < cj.BaseOffset
 	})
 
+	// Apply maxResults only to final output
+	if cfg.MaxResults > 0 && len(results) > cfg.MaxResults {
+		results = results[:cfg.MaxResults]
+	}
+
 	Log.Info("MultiSessionPointerScan: %d chains survive cross-reference", len(results))
 	return results
 }
 
 // bfsSingleSession does BFS backward from target using one pmap.
-// Returns all PointerChain that start from a module-static address.
+// maxResults=0 means no cap.
+const maxQueuePerDepth = 500_000 // prevent BFS explosion
+
 func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, maxResults int) []PointerChain {
 	type qItem struct {
 		targetAddr uintptr
@@ -501,6 +513,12 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 		}
 		wg.Wait()
 		fmt.Printf("  [depth %d/%d] done — found %d chains so far, next queue=%d\n", depth+1, maxDepth, len(results), len(nextQueue))
+
+		// Cap queue to prevent explosion
+		if len(nextQueue) > maxQueuePerDepth {
+			fmt.Printf("  [WARN] queue capped at %d (was %d) — increase depth or reduce offset for better results\n", maxQueuePerDepth, len(nextQueue))
+			nextQueue = nextQueue[:maxQueuePerDepth]
+		}
 		queue = nextQueue
 	}
 	return results
