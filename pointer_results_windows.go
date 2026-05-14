@@ -194,7 +194,7 @@ func cmdPointerResultsLoad(args []string) {
 
 	// If expected address given, verify chains resolve to it
 	if len(args) >= 2 && currentHandle != 0 {
-		expectedAddr, err := parseAddr(args[1])
+		expectedAddr, err := resolveAddr(args[1])
 		if err != nil {
 			fmt.Println("Invalid address:", err)
 			return

@@ -63,6 +63,10 @@ func main() {
 		switch cmd {
 		case "help", "h", "?":
 			printHelp()
+		case "alias":
+			cmdAlias(args)
+		case "unalias":
+			cmdUnalias(args)
 		case "list", "ps":
 			cmdListProcesses()
 		case "open", "attach":
@@ -243,6 +247,9 @@ POINTER RESULTS (save/load/verify chains)
     7. pscan 6 2048 50          <- cross-reference both sessions
 
 OTHER
+  alias [name] [addr]  - set/list address aliases (use name instead of hex anywhere)
+                         e.g: alias hp 0x614DD58  then: write hp 999  freeze hp 999
+  unalias <name>       - remove an alias
   log                  - show log file path
   loglast [N]          - copy full log to clipboard (last N lines if specified)
                          includes version header — paste directly into GitHub issue
@@ -581,7 +588,7 @@ func cmdWrite(args []string) {
 		fmt.Println("Usage: write <addr_hex> <value>")
 		return
 	}
-	addr, err := parseAddr(args[0])
+	addr, err := resolveAddr(args[0])
 	if err != nil {
 		fmt.Println("Invalid address:", err)
 		return
@@ -611,7 +618,7 @@ func cmdAddToList(args []string) {
 		fmt.Printf("Added %d addresses to list\n", len(scanner.Results))
 		return
 	}
-	addr, err := parseAddr(args[0])
+	addr, err := resolveAddr(args[0])
 	if err != nil {
 		fmt.Println("Invalid address:", err)
 		return
@@ -652,7 +659,7 @@ func cmdRead(args []string) {
 		fmt.Println("Usage: read <addr_hex> [type]")
 		return
 	}
-	addr, err := parseAddr(args[0])
+	addr, err := resolveAddr(args[0])
 	if err != nil {
 		fmt.Println("Invalid address:", err)
 		return
@@ -681,7 +688,7 @@ func cmdFreeze(args []string) {
 		fmt.Println("Usage: freeze <addr_hex> <value> [label]")
 		return
 	}
-	addr, err := parseAddr(args[0])
+	addr, err := resolveAddr(args[0])
 	if err != nil {
 		fmt.Println("Invalid address:", err)
 		return
@@ -762,7 +769,7 @@ func cmdPmapSave(args []string) {
 		return
 	}
 
-	targetAddr, err := parseAddr(args[1])
+	targetAddr, err := resolveAddr(args[1])
 	if err != nil {
 		fmt.Println("Invalid address:", err)
 		return
@@ -815,7 +822,7 @@ func cmdPmapLoad(args []string) {
 		fmt.Println("Warning: this pmap has no target address saved (old format?)")
 		fmt.Println("Use: pmload <file.pmap> <addr_hex>  to specify it manually")
 		if len(args) >= 2 {
-			addr, err := parseAddr(args[1])
+			addr, err := resolveAddr(args[1])
 			if err != nil {
 				fmt.Println("Invalid address:", err)
 				return
