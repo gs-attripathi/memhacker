@@ -67,7 +67,18 @@ var (
 	procModule32Next     = modKernel32.NewProc("Module32NextW")
 	procProcess32First   = modKernel32.NewProc("Process32FirstW")
 	procProcess32Next    = modKernel32.NewProc("Process32NextW")
+	procIsWow64Process   = modKernel32.NewProc("IsWow64Process")
 )
+
+// IsProcess32Bit returns true if the process is a 32-bit process running under WOW64
+func IsProcess32Bit(handle windows.Handle) bool {
+	var wow64 uint32
+	ret, _, _ := procIsWow64Process.Call(uintptr(handle), uintptr(unsafe.Pointer(&wow64)))
+	if ret == 0 {
+		return false
+	}
+	return wow64 != 0
+}
 
 type ProcessInfo struct {
 	PID  uint32
@@ -203,7 +214,11 @@ func isWritable(mbi *MEMORY_BASIC_INFORMATION) bool {
 func EnumMemoryRegions(handle windows.Handle, writableOnly bool) []MEMORY_BASIC_INFORMATION {
 	var regions []MEMORY_BASIC_INFORMATION
 	addr := uintptr(0x10000)
+	// Use IsProcess32Bit to determine max address
 	maxAddr := uintptr(0x7FFFFFFFFFFF)
+	if IsProcess32Bit(handle) {
+		maxAddr = uintptr(0x7FFFFFFF)
+	}
 
 	for addr < maxAddr {
 		mbi, err := QueryRegion(handle, addr)

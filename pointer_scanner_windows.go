@@ -32,7 +32,8 @@ type PointerMap struct {
 	Modules    []ModuleInfo
 	CreatedAt  time.Time
 	PID        uint32
-	TargetAddr uintptr // the address we were scanning for when this pmap was saved
+	TargetAddr uintptr
+	Is32Bit    bool // true if this was built from a 32-bit process
 }
 
 // Save writes the pointer map to a binary file.
@@ -54,6 +55,11 @@ func (pm *PointerMap) Save(path string) error {
 	w(pm.PID)
 	w(pm.CreatedAt.Unix())
 	w(uint64(pm.TargetAddr))
+	is32 := uint8(0)
+	if pm.Is32Bit {
+		is32 = 1
+	}
+	w(is32)
 	w(uint32(len(pm.Modules)))
 	for _, m := range pm.Modules {
 		name := []byte(m.Name)
@@ -85,6 +91,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	var magic, version, pid uint32
 	var ts int64
 	var targetAddr uint64
+	var is32 uint8
 	r(&magic)
 	if magic != pmapMagic {
 		return nil, fmt.Errorf("not a valid pmap file (bad magic)")
@@ -93,6 +100,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	r(&pid)
 	r(&ts)
 	r(&targetAddr)
+	r(&is32)
 
 	var modCount uint32
 	r(&modCount)
@@ -125,6 +133,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 		CreatedAt:  time.Unix(ts, 0),
 		PID:        pid,
 		TargetAddr: uintptr(targetAddr),
+		Is32Bit:    is32 != 0,
 	}, nil
 }
 
@@ -132,8 +141,16 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 // Building the pointer map
 // -----------------------------------------------------------------------
 
-func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32) (*PointerMap, error) {
-	Log.Info("BuildPointerMap: starting, %d modules", len(modules))
+func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is32Bit bool) (*PointerMap, error) {
+	Log.Info("BuildPointerMap: starting, %d modules, is32Bit=%v", len(modules), is32Bit)
+	ptrSz := 8
+	if is32Bit {
+		ptrSz = 4
+	}
+	maxUserAddr := uintptr(0x7FFFFFFFFFFF)
+	if is32Bit {
+		maxUserAddr = uintptr(0x7FFFFFFF)
+	}
 	regions := EnumMemoryRegions(handle, false)
 	Log.Debug("BuildPointerMap: %d readable regions", len(regions))
 
@@ -147,10 +164,9 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32) (*
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].lo < ranges[j].lo })
 
 	isValidAddr := func(v uintptr) bool {
-		if v < 0x10000 || v > 0x7FFFFFFFFFFF {
+		if v < 0x10000 || v > maxUserAddr {
 			return false
 		}
-		// binary search
 		lo, hi := 0, len(ranges)-1
 		for lo <= hi {
 			mid := (lo + hi) / 2
@@ -176,38 +192,43 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32) (*
 	var wg sync.WaitGroup
 	for i := 0; i < numCPU; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range jobs {
-				// align start to 8 bytes
-				start := r.BaseAddress
-				if start%8 != 0 {
-					start += 8 - (start % 8)
-				}
-				size := int(r.RegionSize)
-				if size < 8 {
-					continue
-				}
-				data, err := ReadMemory(handle, r.BaseAddress, size)
-				if err != nil || len(data) < 8 {
-					continue
-				}
-				offset := int(start - r.BaseAddress)
-				var local []ptrEntry
-				for i := offset; i+8 <= len(data); i += 8 {
-					v := uintptr(binary.LittleEndian.Uint64(data[i : i+8]))
-					if isValidAddr(v) {
-						local = append(local, ptrEntry{
-							value: v,
-							addr:  r.BaseAddress + uintptr(i),
-						})
+			go func() {
+				defer wg.Done()
+				for r := range jobs {
+					// align start to ptrSz bytes
+					start := r.BaseAddress
+					if start%uintptr(ptrSz) != 0 {
+						start += uintptr(ptrSz) - (start % uintptr(ptrSz))
+					}
+					size := int(r.RegionSize)
+					if size < ptrSz {
+						continue
+					}
+					data, err := ReadMemory(handle, r.BaseAddress, size)
+					if err != nil || len(data) < ptrSz {
+						continue
+					}
+					offset := int(start - r.BaseAddress)
+					var local []ptrEntry
+					for i := offset; i+ptrSz <= len(data); i += ptrSz {
+						var v uintptr
+						if ptrSz == 4 {
+							v = uintptr(binary.LittleEndian.Uint32(data[i : i+4]))
+						} else {
+							v = uintptr(binary.LittleEndian.Uint64(data[i : i+8]))
+						}
+						if isValidAddr(v) {
+							local = append(local, ptrEntry{
+								value: v,
+								addr:  r.BaseAddress + uintptr(i),
+							})
+						}
+					}
+					if len(local) > 0 {
+						resultChan <- local
 					}
 				}
-				if len(local) > 0 {
-					resultChan <- local
-				}
-			}
-		}()
+			}()
 	}
 	go func() { wg.Wait(); close(resultChan) }()
 
@@ -231,6 +252,7 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32) (*
 		Modules:   modules,
 		CreatedAt: time.Now(),
 		PID:       pid,
+		Is32Bit:   is32Bit,
 	}
 	Log.Info("BuildPointerMap: done, %d pointer entries", len(all))
 	return pm, nil
@@ -487,7 +509,7 @@ func findModuleByAddr(modules []ModuleInfo, addr uintptr) *ModuleInfo {
 
 // VerifyChain follows a chain and returns the final address.
 // modules = current session's modules (to resolve base).
-func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain) (uintptr, bool) {
+func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain, is32Bit bool) (uintptr, bool) {
 	var base uintptr
 	for _, m := range modules {
 		if m.Name == chain.BaseModule {
@@ -500,12 +522,21 @@ func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain
 	}
 	addr := base + chain.BaseOffset
 	for _, offset := range chain.Offsets {
-		ptr, err := ReadPointer(handle, addr)
-		if err != nil || ptr == 0 {
-			return 0, false
+		var ptr uintptr
+		var err error
+		if is32Bit {
+			buf, e := ReadMemory(handle, addr, 4)
+			if e != nil || len(buf) < 4 {
+				return 0, false
+			}
+			ptr = uintptr(binary.LittleEndian.Uint32(buf))
+		} else {
+			ptr, err = ReadPointer(handle, addr)
+			if err != nil || ptr == 0 {
+				return 0, false
+			}
 		}
-		// offset stored as two's complement — adding it works correctly
-		// whether positive or negative due to unsigned wrap-around
+		// offset stored as two's complement — works for both signs
 		addr = ptr + offset
 	}
 	return addr, true

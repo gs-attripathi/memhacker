@@ -18,6 +18,7 @@ var (
 	currentHandle  windows.Handle
 	currentPID     uint32
 	currentModules []ModuleInfo
+	currentIs32Bit bool // true if attached process is 32-bit (WOW64)
 	scanner        *MemoryScanner
 	freezer        *Freezer
 	currentDT      DataType = TypeInt32
@@ -254,6 +255,7 @@ func cmdOpen(args []string) {
 	}
 	currentHandle = h
 	currentPID = uint32(pid)
+	currentIs32Bit = IsProcess32Bit(h)
 	scanner = NewMemoryScanner(h)
 	freezer = NewFreezer(h)
 	pointerMap = nil // invalidate stale pmap from previous session
@@ -270,7 +272,12 @@ func cmdOpen(args []string) {
 			break
 		}
 	}
-	fmt.Printf("Attached to %s (PID %d), %d modules loaded\n", name, pid, len(mods))
+
+	arch := "64-bit"
+	if currentIs32Bit {
+		arch = "32-bit (WOW64)"
+	}
+	fmt.Printf("Attached to %s (PID %d) [%s], %d modules loaded\n", name, pid, arch, len(mods))
 }
 
 func cmdClose() {
@@ -686,7 +693,7 @@ func cmdBuildPointerMap() {
 	}
 	fmt.Println("Building pointer map (this may take a while)...")
 	start := time.Now()
-	pm, err := BuildPointerMap(currentHandle, currentModules, currentPID)
+	pm, err := BuildPointerMap(currentHandle, currentModules, currentPID, currentIs32Bit)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
@@ -868,7 +875,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	if currentHandle != 0 && len(results) > 0 {
 		fmt.Println("\nVerifying chains against current process...")
 		for i, r := range results {
-			addr, ok := VerifyChain(currentHandle, currentModules, r.Chain)
+			addr, ok := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
 			if ok {
 				val, err := scanner.ReadCurrentValue(addr, currentDT)
 				if err == nil {
