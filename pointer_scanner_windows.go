@@ -492,16 +492,17 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 						copy(newOffsets[1:], item.offsets)
 
 						// Is this pointer inside a module (static)?
-						if mod := findModuleByAddr(pm.Modules, p.addr); mod != nil {
-							mu.Lock()
-							if len(results) < maxResults {
-								results = append(results, PointerChain{
-									BaseModule: mod.Name,
-									BaseOffset: p.addr - mod.Base,
-									Offsets:    newOffsets,
-								})
-							}
-							mu.Unlock()
+					if mod := findModuleByAddr(pm.Modules, p.addr); mod != nil {
+						mu.Lock()
+						// maxResults=0 means no cap
+						if maxResults == 0 || len(results) < maxResults {
+							results = append(results, PointerChain{
+								BaseModule: mod.Name,
+								BaseOffset: p.addr - mod.Base,
+								Offsets:    newOffsets,
+							})
+						}
+						mu.Unlock()
 						} else {
 							// Not static yet — keep going deeper
 							nextMu.Lock()
