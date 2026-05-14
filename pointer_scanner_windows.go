@@ -403,8 +403,8 @@ func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
 // bfsSingleSession performs backward BFS from target through the pointer map.
 // It returns all pointer chains anchored at a non-system module (static address).
 // hardCap limits how many chains are collected per session to prevent OOM.
-const bfsHardCap  = 5_000_000 // max chains collected per session
-const bfsQueueCap = 1_000_000 // max BFS queue size per depth level
+const bfsHardCap  = 0 // 0 = no cap
+const bfsQueueCap = 0 // 0 = no cap
 
 func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string) []PointerChain {
 	type qItem struct {
@@ -455,9 +455,8 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 						copy(newOffsets[1:], item.offsets)
 
 						if mod := findStaticModule(pm.Modules, p.addr, filter); mod != nil {
-							// p.addr is inside a non-system module → static pointer found
 							mu.Lock()
-							if len(results) < bfsHardCap {
+							if bfsHardCap == 0 || len(results) < bfsHardCap {
 								results = append(results, PointerChain{
 									BaseModule: mod.Name,
 									BaseOffset: p.addr - mod.Base,
@@ -468,22 +467,21 @@ func bfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 						} else {
 							// Not static yet — add to next BFS level
 							nextMu.Lock()
-							if len(nextQueue) < bfsQueueCap {
-								nextQueue = append(nextQueue, qItem{
-									addr:    p.addr,
-									offsets: newOffsets,
-								})
-							}
+							nextQueue = append(nextQueue, qItem{
+								addr:    p.addr,
+								offsets: newOffsets,
+							})
 							nextMu.Unlock()
 						}
-					}
-				}
+					} // end for ptrs
+				} // end for jobs
 			}()
 		}
 		wg.Wait()
 
-		if len(nextQueue) >= bfsQueueCap {
-			fmt.Printf("    [WARN] queue capped at %d — reduce offset or depth if too slow\n", bfsQueueCap)
+		if len(nextQueue) > 0 && bfsQueueCap > 0 && len(nextQueue) > bfsQueueCap {
+			fmt.Printf("  [WARN] queue capped at %d (was %d)\n", bfsQueueCap, len(nextQueue))
+			nextQueue = nextQueue[:bfsQueueCap]
 		}
 		queue = nextQueue
 	}
