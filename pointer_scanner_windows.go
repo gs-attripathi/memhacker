@@ -703,16 +703,13 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 
 	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, maxOffsets)
 	if len(results) > 0 {
-		// Auto-save ALL candidates before applying maxResults cap
+		// Auto-save ALL candidates before caller applies maxResults cap
 		const autoSaveFile = "pscan_last.json"
 		if err := SavePointerResults(autoSaveFile, results, "", false, TypeInt32, 0, nil); err == nil {
 			fmt.Printf("  Auto-saved %d total candidates to %s\n", len(results), autoSaveFile)
 		}
-		if len(results) > maxResults {
-			results = results[:maxResults]
-		}
-		Log.Info("MultiSessionPointerScan: %d results (showing %d)", len(results), len(results))
-		return results
+		Log.Info("MultiSessionPointerScan: %d total candidates", len(results))
+		return results // caller (storeAndPrintResults) caps after verifying
 	}
 
 	fmt.Println("  No chains found.")

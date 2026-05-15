@@ -481,34 +481,48 @@ func cmdPointerResultsList(args []string) {
 }
 
 // --- Wire into cmdPointerScan to auto-store results ---
-func storeAndPrintResults(results []PointerResult, handle windows.Handle) {
-	lastPscanResults = results
-
+// results = all candidates (uncapped). maxResults = how many to keep after verifying.
+// If attached: verifies each chain, shows only OK ones up to maxResults.
+// If not attached: shows first maxResults unverified.
+func storeAndPrintResults(results []PointerResult, handle windows.Handle, maxResults int) {
 	fmt.Println()
-	for i, r := range results {
-		fmt.Printf("[%d] %s\n", i+1, r.Chain.String())
-	}
 
 	if handle != 0 && len(results) > 0 {
-		fmt.Println("\nVerifying chains against current process...")
-		ok := 0
-		for i, r := range results {
+		fmt.Printf("Verifying %d candidates — keeping first %d that resolve...\n", len(results), maxResults)
+		var okResults []PointerResult
+		broken := 0
+		for _, r := range results {
 			addr, valid := VerifyChain(handle, currentModules, r.Chain, currentIs32Bit)
-			if valid {
-				val, err := scanner.ReadCurrentValue(addr, currentDT)
-				if err == nil {
-					fmt.Printf("  [%d] OK -> 0x%X = %s\n", i+1, addr, val)
-				} else {
-					fmt.Printf("  [%d] OK -> 0x%X\n", i+1, addr)
-				}
-				ok++
-			} else {
-				fmt.Printf("  [%d] BROKEN\n", i+1)
+			if !valid {
+				broken++
+				continue
+			}
+			val, err := scanner.ReadCurrentValue(addr, currentDT)
+			valStr := ""
+			if err == nil {
+				valStr = fmt.Sprintf(" = %s", val)
+			}
+			idx := len(okResults) + 1
+			fmt.Printf("  [%d] OK -> 0x%X%s  %s\n", idx, addr, valStr, r.Chain.String())
+			okResults = append(okResults, r)
+			if len(okResults) >= maxResults {
+				break
 			}
 		}
-		fmt.Printf("\n%d/%d chains verified OK\n", ok, len(results))
+		fmt.Printf("\nShowing %d OK chains (%d broken/skipped from %d total)\n", len(okResults), broken, len(results))
+		lastPscanResults = okResults
+	} else {
+		// Not attached — just show first maxResults unverified
+		shown := results
+		if len(shown) > maxResults {
+			shown = shown[:maxResults]
+		}
+		for i, r := range shown {
+			fmt.Printf("[%d] %s\n", i+1, r.Chain.String())
+		}
+		lastPscanResults = shown
 	}
+
 	fmt.Printf("\nTip: prsave results.json  <- save these chains\n")
-	fmt.Printf("     prlist ok            <- show only non-broken chains\n")
 	fmt.Printf("     prverify             <- re-verify after game restart\n")
 }

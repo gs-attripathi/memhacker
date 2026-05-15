@@ -994,7 +994,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		fmt.Println("No chains found. Try: more sessions, bigger depth/offset, or check target addresses.")
 		return
 	}
-	storeAndPrintResults(results, currentHandle)
+	storeAndPrintResults(results, currentHandle, maxResults)
 }
 
 func cmdModules() {
