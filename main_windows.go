@@ -538,6 +538,8 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	fmt.Printf("Found %d results in %v\n", count, elapsed)
 	if count > 0 && count <= 20 {
 		showResults(20)
+	} else if count > 20 {
+		showResults(10)
 	}
 }
 
@@ -565,6 +567,8 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	fmt.Printf("%d results remaining (%v)\n", count, elapsed)
 	if count > 0 && count <= 20 {
 		showResults(20)
+	} else if count > 20 {
+		showResults(10)
 	}
 }
 
