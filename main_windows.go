@@ -875,6 +875,10 @@ func cmdPmapAdd(args []string) {
 	}
 	// Add to last session
 	last := &pscanSessions[len(pscanSessions)-1]
+	// First pmadd on this session: also include the original pmsave address
+	if len(last.TargetAddrs) == 0 {
+		last.TargetAddrs = append(last.TargetAddrs, last.PMap.TargetAddr)
+	}
 	last.TargetAddrs = append(last.TargetAddrs, addr)
 	fmt.Printf("Added 0x%X to session '%s' (now %d targets: ",
 		addr, last.Label, len(last.TargetAddrs))
