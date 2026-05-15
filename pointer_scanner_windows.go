@@ -558,6 +558,27 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 		}()
 	}
 
+	// Progress ticker — prints every 5s so user knows scan is alive
+	done := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		start := time.Now()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+				r.mu.Lock()
+				n := len(r.results)
+				r.mu.Unlock()
+				q := len(r.jobs)
+				fmt.Printf("    ... %v elapsed | chains=%d | queue=%d\n",
+					time.Since(start).Round(time.Second), n, q)
+			}
+		}
+	}()
+
 	// Seed the initial job
 	var initial dfsJob
 	initial.addr = target
@@ -565,6 +586,7 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 
 	// Block until all DFS work is done
 	r.wg.Wait()
+	close(done)   // stop progress ticker
 	close(r.jobs) // signal all worker goroutines to exit
 
 	return r.results
