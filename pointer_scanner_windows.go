@@ -94,6 +94,7 @@ type PointerScanConfig struct {
 	BaseFilter        string
 	MaxOffsetsPerNode int // CE's LimitToMaxOffsetsPerNode (0 = use default 5)
 	ChainCap          int // unused, kept for API compat
+	DT                DataType
 }
 
 // ---------------------------------------------------------------------------
@@ -706,7 +707,7 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		// Auto-save ALL candidates before caller applies maxResults cap.
 		// Never overwrites — increments suffix until a free filename is found.
 		autoSaveFile := nextAutoSavePath()
-		if err := SavePointerResults(autoSaveFile, results, "", false, TypeInt32, 0, nil); err == nil {
+		if err := SavePointerResults(autoSaveFile, results, "", false, cfg.DT, 0, nil); err == nil {
 			fmt.Printf("  Auto-saved %d total candidates to %s\n", len(results), autoSaveFile)
 		}
 		Log.Info("MultiSessionPointerScan: %d total candidates", len(results))

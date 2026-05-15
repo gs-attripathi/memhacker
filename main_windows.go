@@ -986,6 +986,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		MaxResults:        maxResults,
 		BaseFilter:        baseFilter,
 		MaxOffsetsPerNode: maxOffsetsPerNode,
+		DT:                currentDT,
 	})
 	elapsed := time.Since(start)
 
