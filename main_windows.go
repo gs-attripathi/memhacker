@@ -134,7 +134,7 @@ func main() {
 			Log.Info("CMD: prverify")
 			cmdPointerResultsVerify(args)
 		case "prlist":
-			cmdPointerResultsList()
+			cmdPointerResultsList(args)
 		case "prwrite":
 			Log.Info("CMD: prwrite %v", args)
 			cmdPointerResultsWrite(args)
@@ -220,7 +220,7 @@ POINTER SCANNING (CE-style multi-session)
                                   filter: exe (default), game, all
                                   maxOffsets: max pointer value groups per node (default 5, CE default)
                                              higher = more thorough but exponentially slower
-                                  defaults: depth=7 offset=5000 max=100 filter=exe maxOffsets=5
+                                  defaults: depth=5 offset=8192 max=100 filter=exe maxOffsets=5
                                   e.g: pscan 5 4000 100
                                   e.g: pscan 5 4000 100 exe 10
 POINTER RESULTS (save/load/verify chains)
@@ -230,7 +230,7 @@ POINTER RESULTS (save/load/verify chains)
                                   e.g: prload hp.json 0x614DD58
   prverify [addr]               - re-verify chains, optional addr = must resolve to this
                                   e.g: prverify 0x614DD58  or  prverify hp (alias)
-  prlist                        - list current in-memory chains
+  prlist [addr|ok]              - list chains; addr=only those resolving to addr, ok=only resolvable
   prwrite <index> <value>       - follow chain, write value once  (e.g: prwrite 1 999)
   prfreeze <index> <value>      - follow chain, freeze value      (e.g: prfreeze 1 999)
 
@@ -949,8 +949,8 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		return
 	}
 
-	depth := 7
-	maxOffset := uintptr(5000)
+	depth := 5
+	maxOffset := uintptr(8192)
 	maxResults := 100
 	baseFilter := ""
 	maxOffsetsPerNode := 0 // 0 = use default (5)

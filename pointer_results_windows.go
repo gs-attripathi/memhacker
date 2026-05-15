@@ -424,18 +424,60 @@ func cmdPointerResultsWrite(args []string) {
 	Log.Info("prwrite: chain %d addr=0x%X val=%s", idx+1, addr, args[1])
 }
 
-// prlist — list current in-memory pointer results
-func cmdPointerResultsList() {
+// prlist [addr|ok] — list current in-memory pointer results.
+// No arg: list all chains.
+// "ok": only chains that currently resolve (any address).
+// hex address: only chains that resolve to exactly that address.
+func cmdPointerResultsList(args []string) {
 	if len(lastPscanResults) == 0 {
 		fmt.Println("No results. Run pscan or prload first.")
 		return
 	}
-	fmt.Printf("%-5s  %-14s  %s\n", "#", "Label", "Chain")
-	fmt.Println(strings.Repeat("-", 90))
-	for i, r := range lastPscanResults {
-		fmt.Printf("%-5d  %-14s  %s\n", i+1, r.Label, r.Chain.String())
+
+	// Determine filter mode
+	filterAddr := false
+	filterOK := false
+	var wantAddr uintptr
+
+	if len(args) > 0 {
+		if strings.ToLower(args[0]) == "ok" {
+			filterOK = true
+		} else {
+			addr, err := resolveAddr(args[0])
+			if err != nil {
+				fmt.Println("Invalid argument: expected a hex address or 'ok'")
+				return
+			}
+			filterAddr = true
+			wantAddr = addr
+		}
+		if (filterAddr || filterOK) && currentHandle == 0 {
+			fmt.Println("Not attached to process — cannot verify chains. Use 'open <game>' first.")
+			return
+		}
 	}
-	fmt.Printf("\nTotal: %d chains  (use prverify to check against current process)\n", len(lastPscanResults))
+
+	fmt.Printf("%-5s  %-20s  %-14s  %s\n", "#", "Address", "Label", "Chain")
+	fmt.Println(strings.Repeat("-", 100))
+
+	shown := 0
+	for i, r := range lastPscanResults {
+		if filterAddr || filterOK {
+			addr, valid := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
+			if !valid {
+				continue
+			}
+			if filterAddr && addr != wantAddr {
+				continue
+			}
+			fmt.Printf("%-5d  0x%-18X  %-14s  %s\n", i+1, addr, r.Label, r.Chain.String())
+		} else {
+			fmt.Printf("%-5d  %-20s  %-14s  %s\n", i+1, "-", r.Label, r.Chain.String())
+		}
+		shown++
+	}
+
+	fmt.Printf("\n%d/%d chains shown\n", shown, len(lastPscanResults))
 }
 
 // --- Wire into cmdPointerScan to auto-store results ---
