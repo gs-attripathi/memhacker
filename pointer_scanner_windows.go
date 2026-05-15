@@ -599,7 +599,7 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 	// Progress ticker
 	doneCh := make(chan struct{})
 	go func() {
-		tick := time.NewTicker(2 * time.Second)
+		tick := time.NewTicker(5 * time.Second)
 		defer tick.Stop()
 		start := time.Now()
 		for {
