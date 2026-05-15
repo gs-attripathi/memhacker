@@ -509,5 +509,6 @@ func storeAndPrintResults(results []PointerResult, handle windows.Handle) {
 		fmt.Printf("\n%d/%d chains verified OK\n", ok, len(results))
 	}
 	fmt.Printf("\nTip: prsave results.json  <- save these chains\n")
+	fmt.Printf("     prlist ok            <- show only non-broken chains\n")
 	fmt.Printf("     prverify             <- re-verify after game restart\n")
 }
