@@ -189,7 +189,7 @@ func compareValues(dt DataType, old, newVal, target, target2 []byte, st ScanType
 	case ScanExact:
 		if dt == TypeFloat32 || dt == TypeFloat64 {
 			tol := tolerance
-			if tol == 0 { tol = 0.1 }
+			if tol == 0 { tol = 1.0 }
 			return math.Abs(toFloat64(dt, newVal)-toFloat64(dt, target)) <= tol
 		}
 		return bytesEqual(newVal[:sz], target[:sz])
