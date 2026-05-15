@@ -615,16 +615,9 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 		filter = "exe"
 	}
 
-	// Per-session chain cap — gather up to maxResults*500 per session to allow
-	// good cross-session intersection. DFS stops early when cap is hit.
-	// 0 = unlimited (rare case: single session, user wants everything).
+	// No cap — DFS stack depth is bounded by maxDepth so OOM is impossible.
+	// A cap here caused cross-session intersection to fail (valid chains cut off early).
 	perSessionCap := 0
-	if len(cfg.Sessions) > 1 {
-		perSessionCap = maxResults * 500
-		if perSessionCap < 50000 {
-			perSessionCap = 50000
-		}
-	}
 
 	fmt.Printf("\nBase filter: %s\n", filterLabel(filter))
 	Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d sessions=%d",
