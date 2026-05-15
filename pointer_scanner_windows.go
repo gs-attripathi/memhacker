@@ -557,7 +557,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 }
 
 // dfsSingleSession runs the CE-style DFS for one target address.
-func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, maxOffsetsPerNode int) []PointerChain {
+func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, maxOffsetsPerNode int, sessLabel string) []PointerChain {
 	if maxDepth > maxDepthCap {
 		Log.Warn("maxDepth %d exceeds cap %d, clamping", maxDepth, maxDepthCap)
 		maxDepth = maxDepthCap
@@ -609,8 +609,8 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 			case <-tick.C:
 				n := atomic.LoadInt64(&r.found)
 				q := len(r.jobs)
-				fmt.Printf("    ... %v | chains=%d | queue=%d\n",
-					time.Since(start).Round(time.Second), n, q)
+				fmt.Printf("    [%s] %v | chains=%d | queue=%d\n",
+					sessLabel, time.Since(start).Round(time.Second), n, q)
 			}
 		}
 	}()
@@ -747,7 +747,7 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 			for ti, target := range targets {
 				fmt.Printf("    [sess %d] target [%d/%d] 0x%X — scanning...\n", idx+1, ti+1, len(targets), target)
 				start := time.Now()
-				chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, maxOffsets)
+				chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, maxOffsets, fmt.Sprintf("sess %d", idx+1))
 				elapsed := time.Since(start)
 
 				m := make(map[string]PointerChain, len(chains))
