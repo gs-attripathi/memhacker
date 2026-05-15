@@ -479,8 +479,9 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 			// level+1 >= maxDepth and not static: dead end, discard (CE: "end of the line")
 		}
 
-		// CE: LimitToMaxOffsetsPerNode
-		if r.maxOffsetsPerNode > 0 {
+		// CE: LimitToMaxOffsetsPerNode — only applies when level > 0
+		// At level 0 (directly from target), explore everything
+		if r.maxOffsetsPerNode > 0 && level > 0 {
 			offsetsAtNode++
 			if offsetsAtNode >= r.maxOffsetsPerNode {
 				break
