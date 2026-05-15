@@ -727,41 +727,50 @@ func filterLabel(f string) string {
 func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string, maxOffsets int) []PointerResult {
 	allChains := make([]map[string]PointerChain, len(sessions))
 
+	// Run all sessions in parallel — each gets its own goroutine + DFS worker pool.
+	// allChains[idx] slots are independent so no mutex needed for writes.
+	var sessWg sync.WaitGroup
 	for idx, sess := range sessions {
-		targets := sess.TargetAddrs
-		if len(targets) == 0 {
-			targets = []uintptr{sess.PMap.TargetAddr}
-		}
+		sessWg.Add(1)
+		go func(idx int, sess PointerScanSession) {
+			defer sessWg.Done()
 
-		fmt.Printf("  Session [%d/%d] %s (%d entries, %d targets)\n",
-			idx+1, len(sessions), sess.Label, len(sess.PMap.Entries), len(targets))
-
-		var sessionMap map[string]PointerChain
-		for ti, target := range targets {
-			fmt.Printf("    target [%d/%d] 0x%X — scanning...\n", ti+1, len(targets), target)
-			start := time.Now()
-			chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, maxOffsets)
-			elapsed := time.Since(start)
-
-			m := make(map[string]PointerChain, len(chains))
-			for _, c := range chains { m[c.Key()] = c }
-			fmt.Printf("    => %d chains in %v\n", len(chains), elapsed)
-			Log.Info("Session[%d] target 0x%X: %d chains in %v", idx, target, len(chains), elapsed)
-
-			if sessionMap == nil {
-				sessionMap = m
-			} else {
-				filtered := make(map[string]PointerChain)
-				for key, chain := range sessionMap {
-					if _, ok := m[key]; ok { filtered[key] = chain }
-				}
-				sessionMap = filtered
+			targets := sess.TargetAddrs
+			if len(targets) == 0 {
+				targets = []uintptr{sess.PMap.TargetAddr}
 			}
-			fmt.Printf("    after intersect: %d candidates\n", len(sessionMap))
-		}
-		allChains[idx] = sessionMap
-		fmt.Printf("  Session [%d] total: %d chains\n", idx+1, len(sessionMap))
+
+			fmt.Printf("  Session [%d/%d] %s (%d entries, %d targets) — starting\n",
+				idx+1, len(sessions), sess.Label, len(sess.PMap.Entries), len(targets))
+
+			var sessionMap map[string]PointerChain
+			for ti, target := range targets {
+				fmt.Printf("    [sess %d] target [%d/%d] 0x%X — scanning...\n", idx+1, ti+1, len(targets), target)
+				start := time.Now()
+				chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, maxOffsets)
+				elapsed := time.Since(start)
+
+				m := make(map[string]PointerChain, len(chains))
+				for _, c := range chains { m[c.Key()] = c }
+				fmt.Printf("    [sess %d] => %d chains in %v\n", idx+1, len(chains), elapsed)
+				Log.Info("Session[%d] target 0x%X: %d chains in %v", idx, target, len(chains), elapsed)
+
+				if sessionMap == nil {
+					sessionMap = m
+				} else {
+					filtered := make(map[string]PointerChain)
+					for key, chain := range sessionMap {
+						if _, ok := m[key]; ok { filtered[key] = chain }
+					}
+					sessionMap = filtered
+				}
+				fmt.Printf("    [sess %d] after intersect: %d candidates\n", idx+1, len(sessionMap))
+			}
+			allChains[idx] = sessionMap
+			fmt.Printf("  Session [%d] done: %d chains\n", idx+1, len(sessionMap))
+		}(idx, sess)
 	}
+	sessWg.Wait()
 
 	// Cross-reference across sessions
 	candidates := allChains[0]
