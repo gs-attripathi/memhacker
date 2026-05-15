@@ -30,29 +30,34 @@ const pmapVersion = uint32(3)
 // ---------------------------------------------------------------------------
 
 type ptrEntry struct {
-	value uintptr
-	addr  uintptr
+	value uintptr // pointer value stored at this memory location
+	addr  uintptr // memory address that holds this pointer value
 }
 
 type PointerMap struct {
-	Entries   []ptrEntry // sorted ascending by .value
-	Modules   []ModuleInfo
-	CreatedAt time.Time
-	PID       uint32
+	Entries    []ptrEntry // sorted ascending by .value
+	Modules    []ModuleInfo
+	CreatedAt  time.Time
+	PID        uint32
 	TargetAddr uintptr
-	Is32Bit   bool
+	Is32Bit    bool
 }
 
 type PointerScanSession struct {
 	PMap        *PointerMap
 	Label       string
-	TargetAddrs []uintptr
+	TargetAddrs []uintptr // multiple targets (CE-style pmadd)
 }
 
+// PointerChain stores a complete pointer path.
+// Offsets are stored STATIC→TARGET order (CE convention):
+//   Offsets[0] = first offset after dereferencing the static base ptr
+//   Offsets[N] = last offset that reaches the target
+// This matches VerifyChain's iteration order exactly.
 type PointerChain struct {
 	BaseModule string
 	BaseOffset uintptr
-	Offsets    []uintptr // outermost first
+	Offsets    []uintptr
 }
 
 func (c PointerChain) Key() string {
@@ -86,8 +91,8 @@ type PointerScanConfig struct {
 	MaxOffset         uintptr
 	MaxResults        int
 	BaseFilter        string
-	MaxOffsetsPerNode int // CE's LimitToMaxOffsetsPerNode (0 = unlimited)
-	ChainCap          int // kept for compat, unused now
+	MaxOffsetsPerNode int // CE's LimitToMaxOffsetsPerNode (0 = use default 5)
+	ChainCap          int // unused, kept for API compat
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +112,9 @@ func (pm *PointerMap) Save(path string) error {
 	w(pmapMagic); w(pmapVersion); w(pm.PID)
 	w(pm.CreatedAt.Unix()); w(uint64(pm.TargetAddr))
 	is32 := uint8(0)
-	if pm.Is32Bit { is32 = 1 }
+	if pm.Is32Bit {
+		is32 = 1
+	}
 	w(is32)
 
 	w(uint32(len(pm.Modules)))
@@ -250,7 +257,7 @@ func isSystemModuleName(name string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Build pointer map — multi-threaded region scan
+// Build pointer map
 // ---------------------------------------------------------------------------
 
 func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is32Bit bool) (*PointerMap, error) {
@@ -352,55 +359,64 @@ func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
 // ---------------------------------------------------------------------------
 // CE-style DFS pointer scanner
 //
-// Mirrors PointerscanWorker.rscan() exactly, including two key pruning features:
-//   1. noLoop — skip address if already in current chain (prevents cycles)
-//   2. maxOffsetsPerNode — limit how many distinct pointer values are explored
-//      at each node (CE's LimitToMaxOffsetsPerNode). Without this, nodes with
-//      thousands of incoming pointers cause exponential blowup.
+// Mirrors PointerscanWorker.rscan() exactly.
 //
-// Work-stealing: goroutine pool (channel). When full → inline DFS recursion.
-// Stack depth bounded by maxDepth → no OOM possible.
+// Key correctness features from CE source:
+//   1. noLoop — skip address if already visited in current chain (prevents cycles)
+//   2. maxOffsetsPerNode — limit distinct pointer value groups per node,
+//      but ONLY at level > 0 (CE never limits at level 0 / target level)
+//   3. Offsets stored STATIC→TARGET order so VerifyChain works correctly
+//
+// Key performance features from CE source:
+//   4. Queue priority — last 3 levels always inline (CE never enqueues near-leaf work)
+//      Prevents queue flooding with cheap shallow work; deep work gets distributed
 // ---------------------------------------------------------------------------
 
-const maxDepthCap  = 24    // compile-time max depth (array sizing)
-const dfsQueueSize = 65536 // goroutine pool channel capacity
+const maxDepthCap  = 24
+const dfsQueueSize = 65536
 
-// dfsJob — one unit of work: "scan backward from addr at this level"
 type dfsJob struct {
 	addr    uintptr
 	level   int
-	noff    int
-	offs    [maxDepthCap]uintptr // chain offsets built so far
-	visited [maxDepthCap]uintptr // addresses in current chain (for noLoop)
+	noff    int                    // offsets accumulated so far
+	offs    [maxDepthCap]uintptr   // offs[0]=level0 offset (near target), offs[noff-1]=deepest
+	visited [maxDepthCap]uintptr   // addresses in current chain for noLoop
 }
 
-// dfsRunner — shared scan state
 type dfsRunner struct {
 	pm      *PointerMap
 	jobs    chan dfsJob
 	wg      sync.WaitGroup
 	mu      sync.Mutex
 	results []PointerChain
-	found   int64 // atomic counter for progress ticker
+	found   int64 // atomic, for progress ticker
 
 	maxDepth          int
 	maxOffset         uintptr
 	filter            string
-	maxOffsetsPerNode int  // 0 = unlimited
-	noLoop            bool // prevent address cycles
+	maxOffsetsPerNode int
+	noLoop            bool
 	stopped           int32
 }
 
+// submit — CE's queue/inline policy:
+// Only enqueue if level+3 < maxDepth (not last 3 levels).
+// Last 3 levels are always inlined — avoids flooding queue with near-leaf work.
 func (r *dfsRunner) submit(job dfsJob) {
 	if atomic.LoadInt32(&r.stopped) != 0 { return }
 	r.wg.Add(1)
-	select {
-	case r.jobs <- job:
-		// worker goroutine picks it up
-	default:
-		// pool full: do it inline (CE: "I'll have to do it myself")
-		r.run(job)
+
+	// CE: only try to queue for non-leaf work (level+3 < maxlevel)
+	if job.level+3 < r.maxDepth {
+		select {
+		case r.jobs <- job:
+			return // worker goroutine will handle it
+		default:
+			// channel full: fall through to inline
+		}
 	}
+	// inline recursion — CE: "I'll have to do it myself"
+	r.run(job)
 }
 
 func (r *dfsRunner) run(job dfsJob) {
@@ -408,11 +424,22 @@ func (r *dfsRunner) run(job dfsJob) {
 	r.rscan(job.addr, job.level, job.offs, job.noff, job.visited)
 }
 
-// rscan — core DFS, mirrors CE's TPointerscanWorker.rscan()
+// rscan — mirrors CE's TPointerscanWorker.rscan() exactly.
+//
+// Offset accumulation note:
+//   offs[0] is set at level 0 (scanning from target):  offs[0] = target - ptrValue
+//   offs[1] is set at level 1:                          offs[1] = level0_addr - ptrValue
+//   offs[noff] is set at current level
+//
+// When a static address is found at level L (noff=L), we store the chain with
+// offsets REVERSED so that chain.Offsets[0] is the deepest offset (near static)
+// and chain.Offsets[L] is the shallowest (near target).
+// VerifyChain applies offsets in slice order (index 0 first), which correctly
+// starts from static and walks toward target.
 func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, noff int, visited [maxDepthCap]uintptr) {
 	if atomic.LoadInt32(&r.stopped) != 0 { return }
 
-	// CE: noLoop — if this address is already in the chain, abort this branch
+	// CE: noLoop — exit if this address is already in the current chain
 	if r.noLoop {
 		for i := 0; i < level; i++ {
 			if visited[i] == addr { return }
@@ -427,15 +454,15 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 		startVal = addr - r.maxOffset
 	}
 
-	// Binary search: find rightmost entry with value <= addr
+	// Binary search: rightmost entry with value <= addr
 	hi := sort.Search(len(entries), func(i int) bool {
 		return entries[i].value > addr
 	}) - 1
 
-	// CE: DifferentOffsetsInThisNode counter for LimitToMaxOffsetsPerNode
+	// CE: DifferentOffsetsInThisNode counter
 	offsetsAtNode := 0
 
-	// Walk backward through pointer value groups (CE: "plist = plist.previous")
+	// Walk backward through pointer value groups — CE: "plist = plist.previous"
 	for hi >= 0 {
 		val := entries[hi].value
 		if val < startVal { break }
@@ -443,7 +470,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 		// CE: tempresults[level] = valuetofind - stopvalue
 		offs[noff] = addr - val
 
-		// Find the start of this value group (all entries with same .value)
+		// Find start of this value group (contiguous entries with same .value)
 		lo := hi
 		for lo > 0 && entries[lo-1].value == val {
 			lo--
@@ -454,11 +481,21 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 			e := entries[i]
 
 			if mod := findStaticModule(r.pm.Modules, e.addr, r.filter); mod != nil {
-				// CE: StorePath — chain complete, anchored at a static module
+				// CE: StorePath — found chain anchored at a static module address.
+				//
+				// Store offsets in REVERSED order (static→target):
+				//   offs[noff] = deepest (nearest to static base)
+				//   offs[0]    = shallowest (nearest to target)
+				// Reversed so VerifyChain can apply them in index order correctly.
+				offLen := noff + 1
+				chainOffsets := make([]uintptr, offLen)
+				for k := 0; k < offLen; k++ {
+					chainOffsets[k] = offs[offLen-1-k]
+				}
 				chain := PointerChain{
 					BaseModule: mod.Name,
 					BaseOffset: e.addr - mod.Base,
-					Offsets:    append([]uintptr(nil), offs[:noff+1]...),
+					Offsets:    chainOffsets,
 				}
 				r.mu.Lock()
 				r.results = append(r.results, chain)
@@ -466,7 +503,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 				atomic.AddInt64(&r.found, 1)
 
 			} else if level+1 < r.maxDepth {
-				// CE: enqueue or recurse inline
+				// CE: non-static, go deeper — enqueue or inline
 				child := dfsJob{
 					addr:    e.addr,
 					level:   level + 1,
@@ -476,11 +513,11 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 				}
 				r.submit(child)
 			}
-			// level+1 >= maxDepth and not static: dead end, discard (CE: "end of the line")
+			// level+1 >= maxDepth and not static: dead end (CE: "end of the line")
 		}
 
-		// CE: LimitToMaxOffsetsPerNode — only applies when level > 0
-		// At level 0 (directly from target), explore everything
+		// CE: LimitToMaxOffsetsPerNode
+		// Only counts at level > 0. At level 0 (target), never limit.
 		if r.maxOffsetsPerNode > 0 && level > 0 {
 			offsetsAtNode++
 			if offsetsAtNode >= r.maxOffsetsPerNode {
@@ -488,11 +525,11 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 			}
 		}
 
-		hi = lo - 1 // step to previous value group
+		hi = lo - 1 // step to previous value group (CE: plist = plist.previous)
 	}
 }
 
-// dfsSingleSession — runs DFS scan on one pmap for one target address
+// dfsSingleSession runs the CE-style DFS for one target address.
 func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, maxOffsetsPerNode int) []PointerChain {
 	numWorkers := runtime.NumCPU()
 
@@ -503,10 +540,9 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 		maxOffset:         maxOffset,
 		filter:            filter,
 		maxOffsetsPerNode: maxOffsetsPerNode,
-		noLoop:            true, // CE: noLoop always recommended
+		noLoop:            true,
 	}
 
-	// Start worker goroutines
 	for i := 0; i < numWorkers; i++ {
 		go func() {
 			for job := range r.jobs {
@@ -515,7 +551,7 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 		}()
 	}
 
-	// Progress ticker — shows activity every 5 seconds
+	// Progress ticker
 	doneCh := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(5 * time.Second)
@@ -534,7 +570,6 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 		}
 	}()
 
-	// Seed initial job
 	var initial dfsJob
 	initial.addr = target
 	r.submit(initial)
@@ -579,17 +614,14 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	filter := cfg.BaseFilter
 	if filter == "" { filter = "exe" }
 
-	// CE default: 5 offsets per node. Keeps branching manageable.
-	// User can override via pscan args. 0 = unlimited (not recommended).
 	maxOffsets := cfg.MaxOffsetsPerNode
-	if maxOffsets <= 0 { maxOffsets = 5 }
+	if maxOffsets <= 0 { maxOffsets = 5 } // CE default
 
 	fmt.Printf("\nBase filter: %s | maxOffsetsPerNode=%d | noLoop=true\n", filterLabel(filter), maxOffsets)
 	Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d sessions=%d maxOffsets=%d",
 		filter, cfg.MaxDepth, cfg.MaxOffset, maxResults, len(cfg.Sessions), maxOffsets)
 
 	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, maxOffsets)
-
 	if len(results) > 0 {
 		Log.Info("MultiSessionPointerScan: %d results", len(results))
 		return results
@@ -599,13 +631,13 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	fmt.Println("  Tips:")
 	fmt.Println("    pscan 5 5000 100            <- more depth")
 	fmt.Println("    pscan 5 5000 100 game        <- include game DLLs")
-	fmt.Println("    pscan 5 5000 100 exe 10      <- more offsets per node (slower)")
+	fmt.Println("    pscan 5 5000 100 exe 10      <- more offsets per node (slower, more thorough)")
 	return nil
 }
 
 func filterLabel(f string) string {
 	switch f {
-	case "exe":  return "main EXE only (most reliable)"
+	case "exe":  return "main EXE only"
 	case "game": return "game DLLs + EXE"
 	case "all":  return "all modules"
 	}
@@ -666,19 +698,20 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 	for _, c := range candidates {
 		results = append(results, PointerResult{Chain: c})
 	}
-
 	sort.Slice(results, func(i, j int) bool {
 		ci, cj := results[i].Chain, results[j].Chain
 		if len(ci.Offsets) != len(cj.Offsets) { return len(ci.Offsets) < len(cj.Offsets) }
 		return ci.BaseOffset < cj.BaseOffset
 	})
-
 	if len(results) > maxResults { results = results[:maxResults] }
 	return results
 }
 
 // ---------------------------------------------------------------------------
 // VerifyChain — follow a saved chain in the live process
+//
+// chain.Offsets are in STATIC→TARGET order (outermost/deepest offset first).
+// We apply them in order: dereference ptr at current addr, add offset, repeat.
 // ---------------------------------------------------------------------------
 
 func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain, is32Bit bool) (uintptr, bool) {
