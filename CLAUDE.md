@@ -162,14 +162,15 @@ loglast [n]               copy last n log lines to Windows clipboard
 
 ### 64-bit UE5/Unity (e.g. SurrounDead)
 - pmap has 30-36M entries (takes ~13s to build)
-- filter=exe, depth=5-7, offset=4000-5000
-- pscan with default maxOffsetsPerNode=5 should finish in 1-5 min per session
-- Game root detection: exe may be in `binaries\win64\` subdir → goes up to game root
+- filter=exe, depth=5 (default), offset=8192 (default)
+- depth=5 finishes in ~1s, depth=6 in ~27s (exponential), depth=7 = minutes
+- Multiple sessions run in parallel — total time = slowest session, not sum
 
 ### Game root detection (IsGameDir)
-`gameRootFromModules()` finds main exe path, then checks if it's in a subdir:
+`gameRootFromModules()` finds main exe path, iteratively strips known subdirs from the tail:
 `bin\`, `bin32\`, `bin64\`, `win32\`, `win64\`, `binaries\`, `x64\`, `x86\`
-If yes → goes up one level to find actual game root. All modules under game root get `IsGameDir=true`.
+Repeats until no more known subdirs remain. Handles both `game\bin\` (1 level) and
+`game\Binaries\Win64\` (2 levels, UE5) correctly. Same logic applied in `LoadPointerMap`.
 
 ---
 
@@ -235,16 +236,28 @@ pscan                    <- single session, intersect-filtered
 
 ---
 
+## Versioning
+
+Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
+
+**Rules (always bump before committing a user-facing change):**
+- PATCH: bug fix, no new commands or behavior changes
+- MINOR: new feature, new command, behavior change, perf improvement
+- MAJOR: breaking change — new pmap file format, incompatible command changes
+
+**Always bump the version and update the table below before pushing.**
+
 ## Version History
 
-| Version | Key change |
-|---------|-----------|
+| Version | Key changes |
+|---------|------------|
 | v1.7.0 | Initial release |
 | v1.8.0 | pmap v3 format (module paths), game root detection |
 | v1.9.0 | NextScan batch reads, loglast, AppVersion in logs |
 | v2.0.0 | Full DFS rewrite (CE-style), noLoop, maxOffsetsPerNode, offset reversal fix, pmadd fix |
+| v2.1.0 | Game root detection fix (iterative strip, UE5 + simple bin dirs), LoadPointerMap game root fix, fast module lookup (binary search), partial case-insensitive attach, prlabel fix, DFS speed (lockless channel, inlined binary search, smaller job structs, larger queue), default depth=5 offset=8192, prlist filter (ok/addr), parallel sessions, auto-save pscan_last_N.json (no overwrite), verify-then-cap in pscan output, pmload multiple files, float scan ±0.1 tolerance, NaN/Inf filter, session labels on progress ticker, pscan JSON data type fix |
 
-Current: **v2.0.0** (AppVersion in `logger.go`)
+Current: **v2.1.0** (AppVersion in `logger.go`)
 
 ---
 
