@@ -703,8 +703,9 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 
 	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, maxOffsets)
 	if len(results) > 0 {
-		// Auto-save ALL candidates before caller applies maxResults cap
-		const autoSaveFile = "pscan_last.json"
+		// Auto-save ALL candidates before caller applies maxResults cap.
+		// Never overwrites — increments suffix until a free filename is found.
+		autoSaveFile := nextAutoSavePath()
 		if err := SavePointerResults(autoSaveFile, results, "", false, TypeInt32, 0, nil); err == nil {
 			fmt.Printf("  Auto-saved %d total candidates to %s\n", len(results), autoSaveFile)
 		}
@@ -718,6 +719,15 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	fmt.Println("    pscan 5 5000 100 game        <- include game DLLs")
 	fmt.Println("    pscan 5 5000 100 exe 10      <- more offsets per node (slower, more thorough)")
 	return nil
+}
+
+func nextAutoSavePath() string {
+	for i := 1; ; i++ {
+		name := fmt.Sprintf("pscan_last_%d.json", i)
+		if _, err := os.Stat(name); os.IsNotExist(err) {
+			return name
+		}
+	}
 }
 
 func filterLabel(f string) string {
