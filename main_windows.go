@@ -86,8 +86,6 @@ func main() {
 			cmdNext(args, reader)
 		case "results", "r":
 			cmdResults(args)
-		case "refresh", "ref":
-			cmdRefresh()
 		case "write", "w":
 			Log.Info("CMD: write %v", args)
 			cmdWrite(args)
@@ -193,7 +191,6 @@ SCANNING
            changed  unchanged  increased  decreased  incby <v>  decby <v>  notequal <v>
   next <type> [value]    - filter scan (same types as scan)
   results [n]            - show top N results (default 20)
-  refresh / ref          - re-read current values of all scan results
   reset                  - clear scan results
 
 VALUE OPS
@@ -583,23 +580,6 @@ func cmdResults(args []string) {
 	showResults(n)
 }
 
-func cmdRefresh() {
-	if currentHandle == 0 {
-		fmt.Println("Not attached")
-		return
-	}
-	if scanner == nil || len(scanner.Results) == 0 {
-		fmt.Println("No scan results. Run scan first.")
-		return
-	}
-	scanner.RefreshValues(currentDT)
-	fmt.Printf("%-20s  %s\n", "Address", "Value")
-	fmt.Println(strings.Repeat("-", 40))
-	for _, r := range scanner.Results {
-		fmt.Printf("0x%-18X  %s\n", r.Address, decodeValue(currentDT, r.Value))
-	}
-	fmt.Printf("\n%d addresses\n", len(scanner.Results))
-}
 
 func showResults(n int) {
 	if scanner == nil || len(scanner.Results) == 0 {
