@@ -178,8 +178,20 @@ func compareValues(dt DataType, old, newVal, target, target2 []byte, st ScanType
 	if sz == 0 || len(newVal) < sz {
 		return false
 	}
+	// Reject NaN/Inf for float scans — games never store these as real values
+	if dt == TypeFloat32 || dt == TypeFloat64 {
+		v := toFloat64(dt, newVal)
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return false
+		}
+	}
 	switch st {
 	case ScanExact:
+		if dt == TypeFloat32 || dt == TypeFloat64 {
+			tol := tolerance
+			if tol == 0 { tol = 0.1 }
+			return math.Abs(toFloat64(dt, newVal)-toFloat64(dt, target)) <= tol
+		}
 		return bytesEqual(newVal[:sz], target[:sz])
 	case ScanNotEqual:
 		return !bytesEqual(newVal[:sz], target[:sz])
