@@ -215,12 +215,14 @@ POINTER SCANNING (CE-style multi-session)
   pmsessions                    - list all registered sessions
   pmclear                       - clear all sessions + pmap
 
-  pscan [depth] [offset] [max] [filter] [chaincap]
+  pscan [depth] [offset] [max] [filter] [maxOffsets]
                                 - run pointer scan across ALL registered sessions
                                   filter: exe (default), game, all
-                                  chaincap: max chains per session (default 10M)
-                                  defaults: depth=7 offset=5000 max=100
-                                  e.g: pscan 5 4000 100 exe 1000000
+                                  maxOffsets: max pointer value groups per node (default 5, CE default)
+                                             higher = more thorough but exponentially slower
+                                  defaults: depth=7 offset=5000 max=100 filter=exe maxOffsets=5
+                                  e.g: pscan 5 4000 100
+                                  e.g: pscan 5 4000 100 exe 10
 POINTER RESULTS (save/load/verify chains)
   prsave <file.json>            - save last pscan results to JSON file
   prload <file.json> [addr]     - load saved chains
