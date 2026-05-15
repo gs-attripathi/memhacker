@@ -394,8 +394,8 @@ func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
 //      Prevents queue flooding with cheap shallow work; deep work gets distributed
 // ---------------------------------------------------------------------------
 
-const maxDepthCap  = 24
-const dfsQueueSize = 65536
+const maxDepthCap  = 16   // depth >16 is never useful; smaller = smaller job structs
+const dfsQueueSize = 1 << 18 // 262144 — large queue reduces unnecessary inline serialisation
 
 type dfsJob struct {
 	addr    uintptr
@@ -409,9 +409,8 @@ type dfsRunner struct {
 	pm           *PointerMap
 	staticRanges []moduleRange // pre-built, sorted — replaces per-address O(n) module scan
 	jobs         chan dfsJob
+	resultsCh    chan PointerChain  // lockless: workers send here, collector goroutine drains
 	wg           sync.WaitGroup
-	mu           sync.Mutex
-	results      []PointerChain
 	found        int64 // atomic, for progress ticker
 
 	maxDepth          int
@@ -476,10 +475,18 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 		startVal = addr - r.maxOffset
 	}
 
-	// Binary search: rightmost entry with value <= addr
-	hi := sort.Search(len(entries), func(i int) bool {
-		return entries[i].value > addr
-	}) - 1
+	// Binary search: rightmost index with .value <= addr.
+	// Inlined to avoid sort.Search closure overhead — this runs millions of times.
+	blo, bhi := 0, len(entries)
+	for blo < bhi {
+		mid := int(uint(blo+bhi) >> 1)
+		if entries[mid].value > addr {
+			bhi = mid
+		} else {
+			blo = mid + 1
+		}
+	}
+	hi := blo - 1
 
 	// CE: DifferentOffsetsInThisNode counter
 	offsetsAtNode := 0
@@ -519,9 +526,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 					BaseOffset: e.addr - mod.Base,
 					Offsets:    chainOffsets,
 				}
-				r.mu.Lock()
-				r.results = append(r.results, chain)
-				r.mu.Unlock()
+				r.resultsCh <- chain
 				atomic.AddInt64(&r.found, 1)
 
 			} else if level+1 < r.maxDepth {
@@ -553,18 +558,36 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 
 // dfsSingleSession runs the CE-style DFS for one target address.
 func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, maxOffsetsPerNode int) []PointerChain {
+	if maxDepth > maxDepthCap {
+		Log.Warn("maxDepth %d exceeds cap %d, clamping", maxDepth, maxDepthCap)
+		maxDepth = maxDepthCap
+	}
+
 	numWorkers := runtime.NumCPU()
 
 	r := &dfsRunner{
 		pm:                pm,
-		staticRanges:      buildStaticRanges(pm.Modules, filter), // built once, shared across all workers
+		staticRanges:      buildStaticRanges(pm.Modules, filter),
 		jobs:              make(chan dfsJob, dfsQueueSize),
+		resultsCh:         make(chan PointerChain, 65536), // collector drains this; workers never block
 		maxDepth:          maxDepth,
 		maxOffset:         maxOffset,
 		maxOffsetsPerNode: maxOffsetsPerNode,
 		noLoop:            true,
 	}
 
+	// Collector goroutine — drains resultsCh without holding any lock
+	var collWg sync.WaitGroup
+	var collected []PointerChain
+	collWg.Add(1)
+	go func() {
+		defer collWg.Done()
+		for c := range r.resultsCh {
+			collected = append(collected, c)
+		}
+	}()
+
+	// Worker pool
 	for i := 0; i < numWorkers; i++ {
 		go func() {
 			for job := range r.jobs {
@@ -596,11 +619,13 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 	initial.addr = target
 	r.submit(initial)
 
-	r.wg.Wait()
+	r.wg.Wait()          // all DFS workers done
 	close(doneCh)
 	close(r.jobs)
+	close(r.resultsCh)   // signal collector to finish
+	collWg.Wait()        // wait for collector to drain
 
-	return r.results
+	return collected
 }
 
 // ---------------------------------------------------------------------------
