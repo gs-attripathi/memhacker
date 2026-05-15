@@ -286,13 +286,25 @@ func cmdOpen(args []string) {
 	// Try as PID first
 	pid, err := strconv.ParseUint(args[0], 10, 32)
 	if err != nil {
-		// Try by name
+		// Try by name — exact, then strip .exe, then partial substring (case-insensitive)
 		procs, _ := ListProcesses()
 		name := strings.ToLower(args[0])
+		// Pass 1: exact match or exact-minus-.exe
 		for _, p := range procs {
-			if strings.ToLower(p.Name) == name || strings.ToLower(strings.TrimSuffix(p.Name, ".exe")) == name {
+			plow := strings.ToLower(p.Name)
+			if plow == name || strings.TrimSuffix(plow, ".exe") == name {
 				pid = uint64(p.PID)
 				break
+			}
+		}
+		// Pass 2: partial substring match (allows "surroundead" to match "SurrounDead.exe")
+		if pid == 0 {
+			for _, p := range procs {
+				if strings.Contains(strings.ToLower(p.Name), name) {
+					pid = uint64(p.PID)
+					fmt.Printf("Matched '%s' -> %s\n", args[0], p.Name)
+					break
+				}
 			}
 		}
 		if pid == 0 {

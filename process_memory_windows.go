@@ -275,32 +275,27 @@ func gameRootFromModules(pid uint32) string {
 		return ""
 	}
 
-	// Heuristic: if exe is in a sub-dir like bin\, bin32\, bin64\, win64\, win32\, binaries\*
-	// then go up to the parent — game DLLs are usually in the root
+	// Iteratively strip recognized bin subdirs from the tail of exeDir.
+	// This handles both single-level (game\bin\) and nested (game\binaries\win64\) cases
+	// without over-shooting: each pass removes exactly one known subdir until none remain.
 	subDirNames := []string{"bin\\", "bin32\\", "bin64\\", "win32\\", "win64\\", "binaries\\", "x64\\", "x86\\"}
-	dirLower := strings.ToLower(exeDir)
-	for _, sub := range subDirNames {
-		if strings.HasSuffix(dirLower, sub) || strings.Contains(dirLower, "\\"+sub) {
-			// Go one level up
-			trimmed := strings.TrimSuffix(exeDir, sub)
-			if trimmed != "" && trimmed != exeDir {
-				// Check if there are DLLs at the parent level by going up one more
-				parentDir := ""
-				trimmedWithoutSlash := strings.TrimSuffix(trimmed, "\\")
-				for i := len(trimmedWithoutSlash) - 1; i >= 0; i-- {
-					if trimmedWithoutSlash[i] == '\\' || trimmedWithoutSlash[i] == '/' {
-						parentDir = trimmedWithoutSlash[:i+1]
-						break
-					}
+	for {
+		stripped := false
+		for _, sub := range subDirNames {
+			if strings.HasSuffix(exeDir, sub) {
+				candidate := strings.TrimSuffix(exeDir, sub)
+				if candidate != "" {
+					exeDir = candidate
+					stripped = true
+					break
 				}
-				if parentDir != "" {
-					Log.Debug("gameRoot: exe in subdir %q, using parent %q", exeDir, parentDir)
-					return parentDir
-				}
-				return trimmed
 			}
 		}
+		if !stripped {
+			break
+		}
 	}
+	Log.Debug("gameRoot: %q", exeDir)
 	return exeDir
 }
 

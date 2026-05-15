@@ -78,7 +78,7 @@ func savedToChain(s SavedChain) (PointerChain, error) {
 func SavePointerResults(path string, results []PointerResult, gameExe string, is32Bit bool, dt DataType, handle windows.Handle, modules []ModuleInfo) error {
 	chains := make([]SavedChain, len(results))
 	for i, r := range results {
-		sc := chainToSaved(r.Chain, "")
+		sc := chainToSaved(r.Chain, r.Label)
 		// Read current value at this chain's address so we can verify later
 		if handle != 0 {
 			addr, ok := VerifyChain(handle, modules, r.Chain, is32Bit)
@@ -189,7 +189,7 @@ func cmdPointerResultsLoad(args []string) {
 	lastLoadedFile = prf
 	lastPscanResults = make([]PointerResult, len(chains))
 	for i, c := range chains {
-		lastPscanResults[i] = PointerResult{Chain: c}
+		lastPscanResults[i] = PointerResult{Chain: c, Label: prf.Chains[i].Label}
 	}
 
 	// If expected address given, verify chains resolve to it
@@ -352,11 +352,9 @@ func cmdPointerResultsLabel(args []string) {
 		fmt.Println("Invalid index")
 		return
 	}
-	// We store label in the PointerResultsFile when saving — for now just show confirmation
-	fmt.Printf("Chain %d labeled as '%s' (will be saved with prsave)\n", idx+1, strings.Join(args[1:], " "))
-	// Tag the label onto the chain key for display — we embed it in a wrapper
-	lastPscanResults[idx].Chain.BaseModule = lastPscanResults[idx].Chain.BaseModule // no-op, label stored on save
-	_ = args
+	label := strings.Join(args[1:], " ")
+	lastPscanResults[idx].Label = label
+	fmt.Printf("Chain %d labeled as '%s'\n", idx+1, label)
 }
 
 // prfreeze <index> <value> — freeze a verified chain's address
@@ -432,10 +430,10 @@ func cmdPointerResultsList() {
 		fmt.Println("No results. Run pscan or prload first.")
 		return
 	}
-	fmt.Printf("%-5s  %-50s\n", "#", "Chain")
-	fmt.Println(strings.Repeat("-", 80))
+	fmt.Printf("%-5s  %-14s  %s\n", "#", "Label", "Chain")
+	fmt.Println(strings.Repeat("-", 90))
 	for i, r := range lastPscanResults {
-		fmt.Printf("%-5d  %s\n", i+1, r.Chain.String())
+		fmt.Printf("%-5d  %-14s  %s\n", i+1, r.Label, r.Chain.String())
 	}
 	fmt.Printf("\nTotal: %d chains  (use prverify to check against current process)\n", len(lastPscanResults))
 }

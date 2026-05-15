@@ -83,6 +83,7 @@ func (c PointerChain) String() string {
 
 type PointerResult struct {
 	Chain PointerChain
+	Label string
 }
 
 type PointerScanConfig struct {
@@ -190,12 +191,33 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 		}
 	}
 
+	// Reconstruct game root using the same iterative-strip heuristic as gameRootFromModules.
+	// First module in a pmap is always the main exe.
 	gameRoot := ""
 	if len(mods) > 0 && mods[0].Path != "" {
 		p := strings.ToLower(mods[0].Path)
+		// Get exe's immediate parent directory
 		for i := len(p) - 1; i >= 0; i-- {
 			if p[i] == '\\' || p[i] == '/' {
 				gameRoot = p[:i+1]
+				break
+			}
+		}
+		// Strip recognized bin subdirs from the tail, same as gameRootFromModules
+		subDirNames := []string{"bin\\", "bin32\\", "bin64\\", "win32\\", "win64\\", "binaries\\", "x64\\", "x86\\"}
+		for {
+			stripped := false
+			for _, sub := range subDirNames {
+				if strings.HasSuffix(gameRoot, sub) {
+					candidate := strings.TrimSuffix(gameRoot, sub)
+					if candidate != "" {
+						gameRoot = candidate
+						stripped = true
+						break
+					}
+				}
+			}
+			if !stripped {
 				break
 			}
 		}
@@ -384,16 +406,16 @@ type dfsJob struct {
 }
 
 type dfsRunner struct {
-	pm      *PointerMap
-	jobs    chan dfsJob
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	results []PointerChain
-	found   int64 // atomic, for progress ticker
+	pm           *PointerMap
+	staticRanges []moduleRange // pre-built, sorted — replaces per-address O(n) module scan
+	jobs         chan dfsJob
+	wg           sync.WaitGroup
+	mu           sync.Mutex
+	results      []PointerChain
+	found        int64 // atomic, for progress ticker
 
 	maxDepth          int
 	maxOffset         uintptr
-	filter            string
 	maxOffsetsPerNode int
 	noLoop            bool
 	stopped           int32
@@ -480,7 +502,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 		for i := lo; i <= hi; i++ {
 			e := entries[i]
 
-			if mod := findStaticModule(r.pm.Modules, e.addr, r.filter); mod != nil {
+			if mod := findInRanges(r.staticRanges, e.addr); mod != nil {
 				// CE: StorePath — found chain anchored at a static module address.
 				//
 				// Store offsets in REVERSED order (static→target):
@@ -535,10 +557,10 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 
 	r := &dfsRunner{
 		pm:                pm,
+		staticRanges:      buildStaticRanges(pm.Modules, filter), // built once, shared across all workers
 		jobs:              make(chan dfsJob, dfsQueueSize),
 		maxDepth:          maxDepth,
 		maxOffset:         maxOffset,
-		filter:            filter,
 		maxOffsetsPerNode: maxOffsetsPerNode,
 		noLoop:            true,
 	}
@@ -582,23 +604,56 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 }
 
 // ---------------------------------------------------------------------------
-// findStaticModule
+// Fast static-module lookup — sorted by base address, binary searched.
+// Replaces the O(n) linear scan inside the hot DFS loop.
 // ---------------------------------------------------------------------------
 
-func findStaticModule(modules []ModuleInfo, addr uintptr, filter string) *ModuleInfo {
+type moduleRange struct {
+	lo, hi uintptr
+	mod    *ModuleInfo
+}
+
+func buildStaticRanges(modules []ModuleInfo, filter string) []moduleRange {
+	var ranges []moduleRange
 	for i := range modules {
 		m := &modules[i]
-		if addr < m.Base || addr >= m.Base+uintptr(m.Size) { continue }
+		var include bool
 		switch filter {
 		case "exe":
-			if strings.HasSuffix(strings.ToLower(m.Name), ".exe") { return m }
+			include = strings.HasSuffix(strings.ToLower(m.Name), ".exe")
 		case "game":
-			if m.IsGameDir { return m }
+			include = m.IsGameDir
 		case "all":
-			return m
+			include = true
+		}
+		if include {
+			ranges = append(ranges, moduleRange{m.Base, m.Base + uintptr(m.Size), m})
+		}
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].lo < ranges[j].lo })
+	return ranges
+}
+
+func findInRanges(ranges []moduleRange, addr uintptr) *ModuleInfo {
+	lo, hi := 0, len(ranges)-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		r := ranges[mid]
+		switch {
+		case addr < r.lo:
+			hi = mid - 1
+		case addr >= r.hi:
+			lo = mid + 1
+		default:
+			return r.mod
 		}
 	}
 	return nil
+}
+
+// findStaticModule kept for any external callers; internally DFS uses findInRanges.
+func findStaticModule(modules []ModuleInfo, addr uintptr, filter string) *ModuleInfo {
+	return findInRanges(buildStaticRanges(modules, filter), addr)
 }
 
 // ---------------------------------------------------------------------------
