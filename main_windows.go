@@ -935,7 +935,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	maxOffset := uintptr(5000)
 	maxResults := 100
 	baseFilter := ""
-	chainCap := 0 // 0 = use default (10M)
+	maxOffsetsPerNode := 0 // 0 = use default (5)
 
 	if len(args) > 0 {
 		depth, _ = strconv.Atoi(args[0])
@@ -951,7 +951,7 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		baseFilter = strings.ToLower(args[3])
 	}
 	if len(args) > 4 {
-		chainCap, _ = strconv.Atoi(args[4])
+		maxOffsetsPerNode, _ = strconv.Atoi(args[4])
 	}
 
 	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d\n",
@@ -962,12 +962,12 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 
 	start := time.Now()
 	results := MultiSessionPointerScan(PointerScanConfig{
-		Sessions:   pscanSessions,
-		MaxDepth:   depth,
-		MaxOffset:  maxOffset,
-		MaxResults: maxResults,
-		BaseFilter: baseFilter,
-		ChainCap:   chainCap,
+		Sessions:          pscanSessions,
+		MaxDepth:          depth,
+		MaxOffset:         maxOffset,
+		MaxResults:        maxResults,
+		BaseFilter:        baseFilter,
+		MaxOffsetsPerNode: maxOffsetsPerNode,
 	})
 	elapsed := time.Since(start)
 

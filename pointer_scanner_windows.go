@@ -19,48 +19,40 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// File-format constants (unchanged — existing .pmap files remain compatible)
+// File-format constants
 // ---------------------------------------------------------------------------
 
 const pmapMagic   = uint32(0x504D4150) // "PMAP"
-const pmapVersion = uint32(3)          // v3: module path included
-
-// dfsQueueSize is the work-stealing channel buffer.
-// When full, workers recurse inline (DFS) — CE-style natural backpressure.
-// No OOM possible: inline recursion depth is bounded by maxDepth (7-12 typically).
-const dfsQueueSize = 32768
-
-// maxDepthCap is the compile-time max depth that fits in a dfsJob.
-const maxDepthCap = 24
+const pmapVersion = uint32(3)
 
 // ---------------------------------------------------------------------------
 // Data structures
 // ---------------------------------------------------------------------------
 
 type ptrEntry struct {
-	value uintptr // pointer value stored at addr
-	addr  uintptr // memory address that holds this pointer value
+	value uintptr
+	addr  uintptr
 }
 
 type PointerMap struct {
-	Entries    []ptrEntry // sorted ascending by .value
-	Modules    []ModuleInfo
-	CreatedAt  time.Time
-	PID        uint32
+	Entries   []ptrEntry // sorted ascending by .value
+	Modules   []ModuleInfo
+	CreatedAt time.Time
+	PID       uint32
 	TargetAddr uintptr
-	Is32Bit    bool
+	Is32Bit   bool
 }
 
 type PointerScanSession struct {
 	PMap        *PointerMap
 	Label       string
-	TargetAddrs []uintptr // multiple target addrs (CE-style pmadd)
+	TargetAddrs []uintptr
 }
 
 type PointerChain struct {
 	BaseModule string
-	BaseOffset uintptr   // offset from module base to the static pointer
-	Offsets    []uintptr // chain offsets, outermost first
+	BaseOffset uintptr
+	Offsets    []uintptr // outermost first
 }
 
 func (c PointerChain) Key() string {
@@ -89,16 +81,17 @@ type PointerResult struct {
 }
 
 type PointerScanConfig struct {
-	Sessions   []PointerScanSession
-	MaxDepth   int
-	MaxOffset  uintptr
-	MaxResults int
-	BaseFilter string
-	ChainCap   int // kept for API compat; DFS no longer needs a cap
+	Sessions          []PointerScanSession
+	MaxDepth          int
+	MaxOffset         uintptr
+	MaxResults        int
+	BaseFilter        string
+	MaxOffsetsPerNode int // CE's LimitToMaxOffsetsPerNode (0 = unlimited)
+	ChainCap          int // kept for compat, unused now
 }
 
 // ---------------------------------------------------------------------------
-// Pmap Save / Load (binary format unchanged)
+// Pmap Save / Load
 // ---------------------------------------------------------------------------
 
 func (pm *PointerMap) Save(path string) error {
@@ -111,33 +104,25 @@ func (pm *PointerMap) Save(path string) error {
 	bw := bufio.NewWriterSize(f, 8*1024*1024)
 	w := func(v interface{}) { binary.Write(bw, binary.LittleEndian, v) }
 
-	w(pmapMagic)
-	w(pmapVersion)
-	w(pm.PID)
-	w(pm.CreatedAt.Unix())
-	w(uint64(pm.TargetAddr))
+	w(pmapMagic); w(pmapVersion); w(pm.PID)
+	w(pm.CreatedAt.Unix()); w(uint64(pm.TargetAddr))
 	is32 := uint8(0)
-	if pm.Is32Bit {
-		is32 = 1
-	}
+	if pm.Is32Bit { is32 = 1 }
 	w(is32)
 
 	w(uint32(len(pm.Modules)))
 	for _, m := range pm.Modules {
 		name := []byte(m.Name)
-		w(uint16(len(name)))
-		bw.Write(name)
+		w(uint16(len(name))); bw.Write(name)
 		mpath := []byte(m.Path)
-		w(uint16(len(mpath)))
-		bw.Write(mpath)
-		w(uint64(m.Base))
-		w(m.Size)
+		w(uint16(len(mpath))); bw.Write(mpath)
+		w(uint64(m.Base)); w(m.Size)
 	}
 
 	w(uint64(len(pm.Entries)))
 	buf := make([]byte, len(pm.Entries)*16)
 	for i, e := range pm.Entries {
-		binary.LittleEndian.PutUint64(buf[i*16:], uint64(e.value))
+		binary.LittleEndian.PutUint64(buf[i*16:],   uint64(e.value))
 		binary.LittleEndian.PutUint64(buf[i*16+8:], uint64(e.addr))
 	}
 	bw.Write(buf)
@@ -163,11 +148,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 	if magic != pmapMagic {
 		return nil, fmt.Errorf("not a valid pmap file (bad magic 0x%X)", magic)
 	}
-	r(&version)
-	r(&pid)
-	r(&ts)
-	r(&targetAddr)
-	r(&is32)
+	r(&version); r(&pid); r(&ts); r(&targetAddr); r(&is32)
 
 	var modCount uint32
 	r(&modCount)
@@ -189,8 +170,7 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 
 		var base uint64
 		var size uint32
-		r(&base)
-		r(&size)
+		r(&base); r(&size)
 		mods[i] = ModuleInfo{
 			Name:     string(nameBuf),
 			Base:     uintptr(base),
@@ -203,7 +183,6 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 		}
 	}
 
-	// Derive game root from first module path (main exe)
 	gameRoot := ""
 	if len(mods) > 0 && mods[0].Path != "" {
 		p := strings.ToLower(mods[0].Path)
@@ -222,7 +201,6 @@ func LoadPointerMap(path string) (*PointerMap, error) {
 
 	var entryCount uint64
 	r(&entryCount)
-
 	entryBuf := make([]byte, entryCount*16)
 	if _, err := io.ReadFull(br, entryBuf); err != nil {
 		return nil, fmt.Errorf("failed to read entries: %v", err)
@@ -263,20 +241,16 @@ func isSystemModuleName(name string) bool {
 	}
 	lower := strings.ToLower(name)
 	for _, s := range systemNames {
-		if lower == s {
-			return true
-		}
+		if lower == s { return true }
 	}
 	for _, p := range driverPrefixes {
-		if strings.HasPrefix(lower, p) {
-			return true
-		}
+		if strings.HasPrefix(lower, p) { return true }
 	}
 	return false
 }
 
 // ---------------------------------------------------------------------------
-// Build pointer map
+// Build pointer map — multi-threaded region scan
 // ---------------------------------------------------------------------------
 
 func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is32Bit bool) (*PointerMap, error) {
@@ -300,19 +274,14 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].lo < ranges[j].lo })
 
 	isValidAddr := func(v uintptr) bool {
-		if v < 0x10000 || v > maxUserAddr {
-			return false
-		}
+		if v < 0x10000 || v > maxUserAddr { return false }
 		lo, hi := 0, len(ranges)-1
 		for lo <= hi {
 			mid := (lo + hi) / 2
 			switch {
-			case v < ranges[mid].lo:
-				hi = mid - 1
-			case v >= ranges[mid].hi:
-				lo = mid + 1
-			default:
-				return true
+			case v < ranges[mid].lo:  hi = mid - 1
+			case v >= ranges[mid].hi: lo = mid + 1
+			default:                  return true
 			}
 		}
 		return false
@@ -320,9 +289,7 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is
 
 	numCPU := runtime.NumCPU()
 	jobs := make(chan MEMORY_BASIC_INFORMATION, len(regions))
-	for _, r := range regions {
-		jobs <- r
-	}
+	for _, r := range regions { jobs <- r }
 	close(jobs)
 
 	resultChan := make(chan []ptrEntry, numCPU*4)
@@ -337,13 +304,9 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is
 					start += uintptr(ptrSz) - rem
 				}
 				size := int(r.RegionSize)
-				if size < ptrSz {
-					continue
-				}
+				if size < ptrSz { continue }
 				data, err := ReadMemory(handle, r.BaseAddress, size)
-				if err != nil || len(data) < ptrSz {
-					continue
-				}
+				if err != nil || len(data) < ptrSz { continue }
 				offset := int(start - r.BaseAddress)
 				var local []ptrEntry
 				for i := offset; i+ptrSz <= len(data); i += ptrSz {
@@ -354,120 +317,107 @@ func BuildPointerMap(handle windows.Handle, modules []ModuleInfo, pid uint32, is
 						v = uintptr(binary.LittleEndian.Uint64(data[i : i+8]))
 					}
 					if isValidAddr(v) {
-						local = append(local, ptrEntry{
-							value: v,
-							addr:  r.BaseAddress + uintptr(i),
-						})
+						local = append(local, ptrEntry{value: v, addr: r.BaseAddress + uintptr(i)})
 					}
 				}
-				if len(local) > 0 {
-					resultChan <- local
-				}
+				if len(local) > 0 { resultChan <- local }
 			}
 		}()
 	}
 	go func() { wg.Wait(); close(resultChan) }()
 
 	var all []ptrEntry
-	total := len(regions)
-	done := 0
+	total, done := len(regions), 0
 	for batch := range resultChan {
 		all = append(all, batch...)
 		done++
 		if done%50 == 0 || done == total {
-			fmt.Printf("\r  scanning regions... %d/%d (%d pointers found)  ", done, total, len(all))
+			fmt.Printf("\r  scanning regions... %d/%d (%d pointers)  ", done, total, len(all))
 		}
 	}
 	fmt.Println()
 
 	sort.Slice(all, func(i, j int) bool { return all[i].value < all[j].value })
-
 	Log.Info("BuildPointerMap: done, %d entries", len(all))
-	return &PointerMap{
-		Entries:   all,
-		Modules:   modules,
-		CreatedAt: time.Now(),
-		PID:       pid,
-		Is32Bit:   is32Bit,
-	}, nil
+	return &PointerMap{Entries: all, Modules: modules, CreatedAt: time.Now(), PID: pid, Is32Bit: is32Bit}, nil
 }
 
-// findInRange returns all entries with value in [lo, hi]. Used externally.
 func (pm *PointerMap) findInRange(lo, hi uintptr) []ptrEntry {
-	if lo > hi {
-		return nil
-	}
+	if lo > hi { return nil }
 	i := sort.Search(len(pm.Entries), func(k int) bool { return pm.Entries[k].value >= lo })
 	j := sort.Search(len(pm.Entries), func(k int) bool { return pm.Entries[k].value > hi })
 	return pm.Entries[i:j]
 }
 
 // ---------------------------------------------------------------------------
-// CE-style DFS pointer scanner with work-stealing goroutine pool
+// CE-style DFS pointer scanner
 //
-// Algorithm matches Cheat Engine's PointerscanWorker.rscan():
-//  - Scan backward from target: find all ptr values in [target-maxOffset, target]
-//  - For each value group: compute offset = target - ptrValue
-//  - For each address holding that value:
-//      static (in module) -> save chain (done!)
-//      non-static          -> go deeper (level+1)
-//  - "Go deeper" = try to enqueue to goroutine pool; if pool full, recurse inline
-//  - Natural backpressure: full pool = inline DFS, stack bounded by maxDepth
-//  - No OOM: no BFS queue that grows exponentially
+// Mirrors PointerscanWorker.rscan() exactly, including two key pruning features:
+//   1. noLoop — skip address if already in current chain (prevents cycles)
+//   2. maxOffsetsPerNode — limit how many distinct pointer values are explored
+//      at each node (CE's LimitToMaxOffsetsPerNode). Without this, nodes with
+//      thousands of incoming pointers cause exponential blowup.
+//
+// Work-stealing: goroutine pool (channel). When full → inline DFS recursion.
+// Stack depth bounded by maxDepth → no OOM possible.
 // ---------------------------------------------------------------------------
 
-// dfsJob is a unit of work for the goroutine pool.
-// Offsets are stored in a fixed array (no heap alloc per job).
+const maxDepthCap  = 24    // compile-time max depth (array sizing)
+const dfsQueueSize = 65536 // goroutine pool channel capacity
+
+// dfsJob — one unit of work: "scan backward from addr at this level"
 type dfsJob struct {
-	addr  uintptr
-	level int
-	noff  int                   // number of valid offsets in offs
-	offs  [maxDepthCap]uintptr  // chain offsets built so far
+	addr    uintptr
+	level   int
+	noff    int
+	offs    [maxDepthCap]uintptr // chain offsets built so far
+	visited [maxDepthCap]uintptr // addresses in current chain (for noLoop)
 }
 
-// dfsRunner holds the shared state for one dfsSingleSession call.
+// dfsRunner — shared scan state
 type dfsRunner struct {
-	pm        *PointerMap
-	jobs      chan dfsJob
-	wg        sync.WaitGroup
-	mu        sync.Mutex
-	results   []PointerChain
+	pm      *PointerMap
+	jobs    chan dfsJob
+	wg      sync.WaitGroup
+	mu      sync.Mutex
+	results []PointerChain
+	found   int64 // atomic counter for progress ticker
 
-	maxDepth   int
-	maxOffset  uintptr
-	filter     string
-	resultsCap int    // stop collecting per-session when we hit this many chains
-	stopped    int32  // atomic: 1 = stop submitting new work
+	maxDepth          int
+	maxOffset         uintptr
+	filter            string
+	maxOffsetsPerNode int  // 0 = unlimited
+	noLoop            bool // prevent address cycles
+	stopped           int32
 }
 
-// submit adds a job to the goroutine pool.
-// If the pool's channel is full it runs inline — CE's "do it myself" fallback.
 func (r *dfsRunner) submit(job dfsJob) {
-	if atomic.LoadInt32(&r.stopped) != 0 {
-		return
-	}
+	if atomic.LoadInt32(&r.stopped) != 0 { return }
 	r.wg.Add(1)
 	select {
 	case r.jobs <- job:
-		// a worker goroutine will pick it up and call r.run()
+		// worker goroutine picks it up
 	default:
-		// channel full: run inline on current goroutine (bounded by maxDepth recursion)
+		// pool full: do it inline (CE: "I'll have to do it myself")
 		r.run(job)
 	}
 }
 
-// run processes one job and decrements the WaitGroup when done.
 func (r *dfsRunner) run(job dfsJob) {
 	defer r.wg.Done()
-	r.rscan(job.addr, job.level, job.offs, job.noff)
+	r.rscan(job.addr, job.level, job.offs, job.noff, job.visited)
 }
 
-// rscan is the core DFS — mirrors CE's TPointerscanWorker.rscan().
-// It scans backward from addr through the pointer map, follows chains,
-// and records chains that reach a static (module) address.
-func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, noff int) {
-	if atomic.LoadInt32(&r.stopped) != 0 {
-		return
+// rscan — core DFS, mirrors CE's TPointerscanWorker.rscan()
+func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, noff int, visited [maxDepthCap]uintptr) {
+	if atomic.LoadInt32(&r.stopped) != 0 { return }
+
+	// CE: noLoop — if this address is already in the chain, abort this branch
+	if r.noLoop {
+		for i := 0; i < level; i++ {
+			if visited[i] == addr { return }
+		}
+		visited[level] = addr
 	}
 
 	entries := r.pm.Entries
@@ -477,22 +427,23 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 		startVal = addr - r.maxOffset
 	}
 
-	// Find the rightmost entry with value <= addr (CE: stopvalue = valuetofind initially)
+	// Binary search: find rightmost entry with value <= addr
 	hi := sort.Search(len(entries), func(i int) bool {
 		return entries[i].value > addr
 	}) - 1
 
-	// Walk backward through value groups — mirrors CE's "plist = plist.previous" loop
+	// CE: DifferentOffsetsInThisNode counter for LimitToMaxOffsetsPerNode
+	offsetsAtNode := 0
+
+	// Walk backward through pointer value groups (CE: "plist = plist.previous")
 	for hi >= 0 {
 		val := entries[hi].value
-		if val < startVal {
-			break // all remaining values are too small (< addr-maxOffset)
-		}
+		if val < startVal { break }
 
-		// CE: tempresults[level] := valuetofind - stopvalue
-		offs[noff] = addr - val // offset at this level (always 0..maxOffset)
+		// CE: tempresults[level] = valuetofind - stopvalue
+		offs[noff] = addr - val
 
-		// Find the start of this value group (entries with same .value are contiguous)
+		// Find the start of this value group (all entries with same .value)
 		lo := hi
 		for lo > 0 && entries[lo-1].value == val {
 			lo--
@@ -503,7 +454,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 			e := entries[i]
 
 			if mod := findStaticModule(r.pm.Modules, e.addr, r.filter); mod != nil {
-				// CE: StorePath — found a chain anchored to a static module!
+				// CE: StorePath — chain complete, anchored at a static module
 				chain := PointerChain{
 					BaseModule: mod.Name,
 					BaseOffset: e.addr - mod.Base,
@@ -511,45 +462,50 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 				}
 				r.mu.Lock()
 				r.results = append(r.results, chain)
-				hitCap := r.resultsCap > 0 && len(r.results) >= r.resultsCap
 				r.mu.Unlock()
-				if hitCap {
-					atomic.StoreInt32(&r.stopped, 1)
-					return
-				}
+				atomic.AddInt64(&r.found, 1)
+
 			} else if level+1 < r.maxDepth {
 				// CE: enqueue or recurse inline
-				childJob := dfsJob{
-					addr:  e.addr,
-					level: level + 1,
-					offs:  offs,
-					noff:  noff + 1,
+				child := dfsJob{
+					addr:    e.addr,
+					level:   level + 1,
+					offs:    offs,
+					noff:    noff + 1,
+					visited: visited,
 				}
-				r.submit(childJob)
+				r.submit(child)
 			}
-			// If level+1 >= maxDepth and not static: dead end — discard (CE: "end of the line")
+			// level+1 >= maxDepth and not static: dead end, discard (CE: "end of the line")
 		}
 
-		// Step to next lower value group (CE: plist = plist.previous)
-		hi = lo - 1
+		// CE: LimitToMaxOffsetsPerNode
+		if r.maxOffsetsPerNode > 0 {
+			offsetsAtNode++
+			if offsetsAtNode >= r.maxOffsetsPerNode {
+				break
+			}
+		}
+
+		hi = lo - 1 // step to previous value group
 	}
 }
 
-// dfsSingleSession runs the CE-style DFS scan on one pointer map for one target address.
-// Returns all chains anchored at a static module address, up to resultsCap chains.
-func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, resultsCap int) []PointerChain {
+// dfsSingleSession — runs DFS scan on one pmap for one target address
+func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, maxOffsetsPerNode int) []PointerChain {
 	numWorkers := runtime.NumCPU()
 
 	r := &dfsRunner{
-		pm:         pm,
-		jobs:       make(chan dfsJob, dfsQueueSize),
-		maxDepth:   maxDepth,
-		maxOffset:  maxOffset,
-		filter:     filter,
-		resultsCap: resultsCap,
+		pm:                pm,
+		jobs:              make(chan dfsJob, dfsQueueSize),
+		maxDepth:          maxDepth,
+		maxOffset:         maxOffset,
+		filter:            filter,
+		maxOffsetsPerNode: maxOffsetsPerNode,
+		noLoop:            true, // CE: noLoop always recommended
 	}
 
-	// Launch worker goroutines — they block on the jobs channel
+	// Start worker goroutines
 	for i := 0; i < numWorkers; i++ {
 		go func() {
 			for job := range r.jobs {
@@ -558,59 +514,50 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 		}()
 	}
 
-	// Progress ticker — prints every 5s so user knows scan is alive
-	done := make(chan struct{})
+	// Progress ticker — shows activity every 5 seconds
+	doneCh := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(5 * time.Second)
 		defer tick.Stop()
 		start := time.Now()
 		for {
 			select {
-			case <-done:
+			case <-doneCh:
 				return
 			case <-tick.C:
-				r.mu.Lock()
-				n := len(r.results)
-				r.mu.Unlock()
+				n := atomic.LoadInt64(&r.found)
 				q := len(r.jobs)
-				fmt.Printf("    ... %v elapsed | chains=%d | queue=%d\n",
+				fmt.Printf("    ... %v | chains=%d | queue=%d\n",
 					time.Since(start).Round(time.Second), n, q)
 			}
 		}
 	}()
 
-	// Seed the initial job
+	// Seed initial job
 	var initial dfsJob
 	initial.addr = target
 	r.submit(initial)
 
-	// Block until all DFS work is done
 	r.wg.Wait()
-	close(done)   // stop progress ticker
-	close(r.jobs) // signal all worker goroutines to exit
+	close(doneCh)
+	close(r.jobs)
 
 	return r.results
 }
 
 // ---------------------------------------------------------------------------
-// findStaticModule — CE's "is this address in a module?" check
+// findStaticModule
 // ---------------------------------------------------------------------------
 
 func findStaticModule(modules []ModuleInfo, addr uintptr, filter string) *ModuleInfo {
 	for i := range modules {
 		m := &modules[i]
-		if addr < m.Base || addr >= m.Base+uintptr(m.Size) {
-			continue
-		}
+		if addr < m.Base || addr >= m.Base+uintptr(m.Size) { continue }
 		switch filter {
 		case "exe":
-			if strings.HasSuffix(strings.ToLower(m.Name), ".exe") {
-				return m
-			}
+			if strings.HasSuffix(strings.ToLower(m.Name), ".exe") { return m }
 		case "game":
-			if m.IsGameDir {
-				return m
-			}
+			if m.IsGameDir { return m }
 		case "all":
 			return m
 		}
@@ -623,64 +570,51 @@ func findStaticModule(modules []ModuleInfo, addr uintptr, filter string) *Module
 // ---------------------------------------------------------------------------
 
 func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
-	if len(cfg.Sessions) == 0 {
-		return nil
-	}
+	if len(cfg.Sessions) == 0 { return nil }
 
 	maxResults := cfg.MaxResults
-	if maxResults <= 0 {
-		maxResults = 100
-	}
+	if maxResults <= 0 { maxResults = 100 }
 
 	filter := cfg.BaseFilter
-	if filter == "" {
-		filter = "exe"
-	}
+	if filter == "" { filter = "exe" }
 
-	// No cap — DFS stack depth is bounded by maxDepth so OOM is impossible.
-	// A cap here caused cross-session intersection to fail (valid chains cut off early).
-	perSessionCap := 0
+	// CE default: 5 offsets per node. Keeps branching manageable.
+	// User can override via pscan args. 0 = unlimited (not recommended).
+	maxOffsets := cfg.MaxOffsetsPerNode
+	if maxOffsets <= 0 { maxOffsets = 5 }
 
-	fmt.Printf("\nBase filter: %s\n", filterLabel(filter))
-	Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d sessions=%d",
-		filter, cfg.MaxDepth, cfg.MaxOffset, maxResults, len(cfg.Sessions))
+	fmt.Printf("\nBase filter: %s | maxOffsetsPerNode=%d | noLoop=true\n", filterLabel(filter), maxOffsets)
+	Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d sessions=%d maxOffsets=%d",
+		filter, cfg.MaxDepth, cfg.MaxOffset, maxResults, len(cfg.Sessions), maxOffsets)
 
-	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, perSessionCap)
+	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, maxOffsets)
 
 	if len(results) > 0 {
-		Log.Info("MultiSessionPointerScan: %d results with filter=%s", len(results), filter)
+		Log.Info("MultiSessionPointerScan: %d results", len(results))
 		return results
 	}
 
 	fmt.Println("  No chains found.")
-	if filter == "exe" {
-		fmt.Println("  Tips:")
-		fmt.Println("    pscan 9 5000 100          <- more depth")
-		fmt.Println("    pscan 7 5000 100 game     <- include game DLLs")
-		fmt.Println("    pscan 7 5000 100 all      <- include all modules (noisy)")
-	} else if filter == "game" {
-		fmt.Println("  Try: pscan 7 5000 100 all")
-	}
+	fmt.Println("  Tips:")
+	fmt.Println("    pscan 5 5000 100            <- more depth")
+	fmt.Println("    pscan 5 5000 100 game        <- include game DLLs")
+	fmt.Println("    pscan 5 5000 100 exe 10      <- more offsets per node (slower)")
 	return nil
 }
 
 func filterLabel(f string) string {
 	switch f {
-	case "exe":
-		return "main EXE only (most reliable)"
-	case "game":
-		return "game DLLs + EXE (non-system)"
-	case "all":
-		return "all modules including GPU/driver DLLs"
+	case "exe":  return "main EXE only (most reliable)"
+	case "game": return "game DLLs + EXE"
+	case "all":  return "all modules"
 	}
 	return f
 }
 
-func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string, perSessionCap int) []PointerResult {
+func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string, maxOffsets int) []PointerResult {
 	allChains := make([]map[string]PointerChain, len(sessions))
 
 	for idx, sess := range sessions {
-		// Collect target addresses from TargetAddrs or fallback to PMap.TargetAddr
 		targets := sess.TargetAddrs
 		if len(targets) == 0 {
 			targets = []uintptr{sess.PMap.TargetAddr}
@@ -688,32 +622,25 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 
 		fmt.Printf("  Session [%d/%d] %s (%d entries, %d targets)\n",
 			idx+1, len(sessions), sess.Label, len(sess.PMap.Entries), len(targets))
-		Log.Info("Session[%d] %s: DFS start filter=%s targets=%d", idx, sess.Label, filter, len(targets))
 
-		// DFS each target address, then intersect results within this session (CE-style pmadd)
 		var sessionMap map[string]PointerChain
 		for ti, target := range targets {
 			fmt.Printf("    target [%d/%d] 0x%X — scanning...\n", ti+1, len(targets), target)
 			start := time.Now()
-			chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, perSessionCap)
+			chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, maxOffsets)
 			elapsed := time.Since(start)
 
 			m := make(map[string]PointerChain, len(chains))
-			for _, c := range chains {
-				m[c.Key()] = c
-			}
+			for _, c := range chains { m[c.Key()] = c }
 			fmt.Printf("    => %d chains in %v\n", len(chains), elapsed)
-			Log.Info("Session[%d] target 0x%X: found %d chains in %v", idx, target, len(chains), elapsed)
+			Log.Info("Session[%d] target 0x%X: %d chains in %v", idx, target, len(chains), elapsed)
 
 			if sessionMap == nil {
 				sessionMap = m
 			} else {
-				// Intersect — keep only chains present for ALL targets (CE: pmadd behavior)
 				filtered := make(map[string]PointerChain)
 				for key, chain := range sessionMap {
-					if _, ok := m[key]; ok {
-						filtered[key] = chain
-					}
+					if _, ok := m[key]; ok { filtered[key] = chain }
 				}
 				sessionMap = filtered
 			}
@@ -723,14 +650,12 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 		fmt.Printf("  Session [%d] total: %d chains\n", idx+1, len(sessionMap))
 	}
 
-	// Cross-reference across sessions — keep only chains present in ALL sessions
+	// Cross-reference across sessions
 	candidates := allChains[0]
 	for i := 1; i < len(allChains); i++ {
 		filtered := make(map[string]PointerChain)
 		for key, chain := range candidates {
-			if _, ok := allChains[i][key]; ok {
-				filtered[key] = chain
-			}
+			if _, ok := allChains[i][key]; ok { filtered[key] = chain }
 		}
 		candidates = filtered
 		fmt.Printf("  After cross-ref with session %d: %d candidates\n", i+1, len(candidates))
@@ -743,15 +668,11 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 
 	sort.Slice(results, func(i, j int) bool {
 		ci, cj := results[i].Chain, results[j].Chain
-		if len(ci.Offsets) != len(cj.Offsets) {
-			return len(ci.Offsets) < len(cj.Offsets)
-		}
+		if len(ci.Offsets) != len(cj.Offsets) { return len(ci.Offsets) < len(cj.Offsets) }
 		return ci.BaseOffset < cj.BaseOffset
 	})
 
-	if len(results) > maxResults {
-		results = results[:maxResults]
-	}
+	if len(results) > maxResults { results = results[:maxResults] }
 	return results
 }
 
@@ -762,34 +683,23 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain, is32Bit bool) (uintptr, bool) {
 	var base uintptr
 	for _, m := range modules {
-		if m.Name == chain.BaseModule {
-			base = m.Base
-			break
-		}
+		if m.Name == chain.BaseModule { base = m.Base; break }
 	}
-	if base == 0 {
-		return 0, false
-	}
+	if base == 0 { return 0, false }
 
 	addr := base + chain.BaseOffset
 	for _, offset := range chain.Offsets {
 		var ptr uintptr
 		if is32Bit {
 			buf, err := ReadMemory(handle, addr, 4)
-			if err != nil || len(buf) < 4 {
-				return 0, false
-			}
+			if err != nil || len(buf) < 4 { return 0, false }
 			ptr = uintptr(binary.LittleEndian.Uint32(buf))
 		} else {
 			var err error
 			ptr, err = ReadPointer(handle, addr)
-			if err != nil {
-				return 0, false
-			}
+			if err != nil { return 0, false }
 		}
-		if ptr == 0 {
-			return 0, false
-		}
+		if ptr == 0 { return 0, false }
 		addr = ptr + offset
 	}
 	return addr, true
