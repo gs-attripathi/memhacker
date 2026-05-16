@@ -17,6 +17,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// scanActive / scanCancelFlag — set by Ctrl+C handler in main to cancel FirstScan.
+// Ctrl+C during scan: cancel + clear results. Ctrl+C outside scan: exit.
+var scanActive     int32 // 1 when FirstScan is running
+var scanCancelFlag int32 // set to 1 to cancel current scan
+
 func encodeValue(dt DataType, s string) ([]byte, error) {
 	buf := make([]byte, dataTypeSize(dt))
 	switch dt {
@@ -327,6 +332,12 @@ type scanChunk struct {
 
 func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	Log.Info("FirstScan: type=%s scan=%d writable=%v", dataTypeName(params.DT), params.ST, params.Writable)
+	atomic.StoreInt32(&scanActive, 1)
+	atomic.StoreInt32(&scanCancelFlag, 0)
+	defer func() {
+		atomic.StoreInt32(&scanActive, 0)
+		atomic.StoreInt32(&scanCancelFlag, 0)
+	}()
 	regions := EnumMemoryRegions(ms.handle, params.Writable)
 	Log.Debug("FirstScan: scanning %d memory regions", len(regions))
 
@@ -401,6 +412,10 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		go func() {
 			defer readerWg.Done()
 			for chunk := range jobs {
+				if atomic.LoadInt32(&scanCancelFlag) != 0 {
+					atomic.AddInt64(&doneCount, 1)
+					continue
+				}
 				data, err := ReadMemory(ms.handle, chunk.addr, chunk.size)
 				atomic.AddInt64(&doneCount, 1)
 				if err != nil || len(data) < sz || sz == 0 {
@@ -532,6 +547,11 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	close(doneCh)
 
 	fmt.Println() // end the \r progress line
+	if atomic.LoadInt32(&scanCancelFlag) != 0 {
+		ms.Results = nil
+		fmt.Println("  Scan cancelled — results cleared for fresh start.")
+		return 0
+	}
 	ms.Results = all
 	Log.Info("FirstScan: done, found %d results", len(all))
 	return len(all)

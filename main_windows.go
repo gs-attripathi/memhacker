@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -45,6 +47,25 @@ func main() {
 		defer Log.Close()
 		fmt.Printf("Logging to: %s\n", logPath)
 	}
+
+	// Ctrl+C: cancel active scan (clears results) or exit if no scan running
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		for range sigCh {
+			if atomic.LoadInt32(&scanActive) != 0 {
+				atomic.StoreInt32(&scanCancelFlag, 1)
+				fmt.Println("\n  [Ctrl+C] cancelling scan...")
+			} else {
+				fmt.Println("Bye!")
+				if currentHandle != 0 {
+					CloseProcessHandle(currentHandle)
+					if freezer != nil { freezer.Stop() }
+				}
+				os.Exit(0)
+			}
+		}
+	}()
 
 	reader := bufio.NewReader(os.Stdin)
 	printBanner()
