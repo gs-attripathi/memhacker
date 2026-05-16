@@ -70,6 +70,15 @@ func (f *Freezer) RemoveByPosition(pos int) bool {
 	return true
 }
 
+func (f *Freezer) RemoveAll() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := len(f.entries)
+	f.entries = make(map[int]*FrozenEntry)
+	Log.Info("Unfreeze all: removed %d entries", n)
+	return n
+}
+
 func (f *Freezer) RemoveByAddr(addr uintptr) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

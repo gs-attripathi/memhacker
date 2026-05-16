@@ -1026,6 +1026,12 @@ func cmdUnfreeze(args []string) {
 			return
 		}
 	}
+	// "all" — clear everything
+	if strings.ToLower(arg) == "all" {
+		n := freezer.RemoveAll()
+		fmt.Printf("Unfroze all %d entries\n", n)
+		return
+	}
 	// Position-based removal — sort DESCENDING so removing high positions first
 	// doesn't shift lower positions, allowing ranges like 1-100 to work correctly.
 	indices := parseIndexSpec(arg)
