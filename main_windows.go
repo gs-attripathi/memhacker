@@ -677,13 +677,13 @@ func showResults(n int) {
 	}
 	total := scanner.totalResults()
 	if n > total { n = total }
-	fmt.Printf("%-20s  %s\n", "Address", "Value")
-	fmt.Println(strings.Repeat("-", 40))
+	fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
+	fmt.Println(strings.Repeat("-", 45))
 	for i := 0; i < n; i++ {
 		addr, _ := scanner.getResult(i)
 		val, err := scanner.ReadCurrentValue(addr, currentDT)
 		if err != nil { val = "?" }
-		fmt.Printf("0x%-18X  %s\n", addr, val)
+		fmt.Printf("%-5d  0x%-18X  %s\n", i+1, addr, val)
 	}
 	if total > n {
 		fmt.Printf("... and %d more (use 'results <N>' to show more)\n", total-n)
