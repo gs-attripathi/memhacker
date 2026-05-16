@@ -564,60 +564,70 @@ func (ms *MemoryScanner) NextScan(params ScanParams) int {
 		go func(indices []int) {
 			defer wg.Done()
 
-			// Try to batch-read a region covering consecutive addresses
+			nzf := buildNearZeroFast(params)
+
+			const chunkRead = 256 * 1024 // 256KB — more addresses covered per syscall
+			const arenaBlock = 65536
+			arena := make([]byte, arenaBlock*sz)
+			arenaOff := 0
+
 			var regionData []byte
 			var regionBase uintptr
+
+			checkAndKeep := func(idx int, newVal []byte) {
+				keep := false
+				if nzf.enabled {
+					// Fast integer comparison for near-zero float range
+					if nzf.is32 {
+						v := binary.LittleEndian.Uint32(newVal)
+						keep = v&0x7FFFFFFF <= nzf.abits32
+					} else {
+						v := binary.LittleEndian.Uint64(newVal)
+						keep = v&0x7FFFFFFFFFFFFFFF <= nzf.abits64
+					}
+				} else {
+					keep = compareValues(params.DT, ms.Results[idx].Value, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
+				}
+				if keep {
+					if arenaOff+sz > len(arena) { arena = make([]byte, arenaBlock*sz); arenaOff = 0 }
+					cp := arena[arenaOff : arenaOff+sz : arenaOff+sz]
+					copy(cp, newVal)
+					arenaOff += sz
+					resultChan <- keepEntry{idx: idx, val: cp}
+				}
+			}
 
 			for _, idx := range indices {
 				r := ms.Results[idx]
 
-				// Check if this address is within our cached region
+				// Use cached region if address falls within it
 				if regionData != nil && r.Address >= regionBase && int(r.Address-regionBase)+sz <= len(regionData) {
-					// Use cached region data
 					offset := int(r.Address - regionBase)
-					newVal := regionData[offset : offset+sz]
-					keep := compareValues(params.DT, r.Value, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
-					if keep {
-						cp := make([]byte, sz)
-						copy(cp, newVal)
-						resultChan <- keepEntry{idx: idx, val: cp}
-					}
+					checkAndKeep(idx, regionData[offset:offset+sz])
 					continue
 				}
 
-				// Read a chunk covering this address + next ~64KB to amortize syscall cost
-					// But don't cross memory region boundaries — query region size first
-					const chunkSize = 64 * 1024
-					readSize := chunkSize
-					if mbi, err2 := QueryRegion(ms.handle, r.Address); err2 == nil {
-						regionEnd := mbi.BaseAddress + mbi.RegionSize
-						if r.Address+uintptr(readSize) > regionEnd {
-							readSize = int(regionEnd - r.Address)
-						}
+				// Read 256KB chunk, clamped to memory region boundary
+				readSize := chunkRead
+				if mbi, err2 := QueryRegion(ms.handle, r.Address); err2 == nil {
+					regionEnd := mbi.BaseAddress + mbi.RegionSize
+					if r.Address+uintptr(readSize) > regionEnd {
+						readSize = int(regionEnd - r.Address)
 					}
-					if readSize < sz {
-						readSize = sz
-					}
-					data, err := ReadMemory(ms.handle, r.Address, readSize)
-					if err != nil || len(data) < sz {
-						// Fallback: read just this address
-						data, err = ReadMemory(ms.handle, r.Address, sz)
-						if err != nil || len(data) < sz {
-							continue
-						}
-						regionData = nil
-					} else {
-						regionData = data
-						regionBase = r.Address
-					}
-
-				newVal := data[:sz]
-				keep := compareValues(params.DT, r.Value, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
-				if keep {
-					cp := make([]byte, sz)
-					copy(cp, newVal)
-					resultChan <- keepEntry{idx: idx, val: cp}
 				}
+				if readSize < sz { readSize = sz }
+
+				data, err := ReadMemory(ms.handle, r.Address, readSize)
+				if err != nil || len(data) < sz {
+					data, err = ReadMemory(ms.handle, r.Address, sz)
+					if err != nil || len(data) < sz { continue }
+					regionData = nil
+				} else {
+					regionData = data
+					regionBase = r.Address
+				}
+
+				checkAndKeep(idx, data[:sz])
 			}
 		}(sorted[start:end])
 	}
