@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -11,18 +12,20 @@ import (
 )
 
 type Freezer struct {
-	handle  windows.Handle
-	entries map[int]*FrozenEntry
-	nextID  int
-	mu      sync.Mutex
-	stop    chan struct{}
+	handle     windows.Handle
+	entries    map[int]*FrozenEntry
+	failCounts map[int]int // consecutive write failures per entry
+	nextID     int
+	mu         sync.Mutex
+	stop       chan struct{}
 }
 
 func NewFreezer(handle windows.Handle) *Freezer {
 	f := &Freezer{
-		handle:  handle,
-		entries: make(map[int]*FrozenEntry),
-		stop:    make(chan struct{}),
+		handle:     handle,
+		entries:    make(map[int]*FrozenEntry),
+		failCounts: make(map[int]int),
+		stop:       make(chan struct{}),
 	}
 	go f.loop()
 	return f
@@ -128,6 +131,8 @@ func (f *Freezer) Stop() {
 	close(f.stop)
 }
 
+const freezeMaxFails = 3 // auto-deactivate after this many consecutive failures
+
 func (f *Freezer) loop() {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -138,11 +143,19 @@ func (f *Freezer) loop() {
 		case <-ticker.C:
 			f.mu.Lock()
 			for id, e := range f.entries {
-				if e.Active {
-					err := WriteMemory(f.handle, e.Address, e.Value)
-					if err != nil {
-						Log.Error("Freeze write failed: id=%d addr=0x%X err=%v", id, e.Address, err)
+				if !e.Active { continue }
+				err := WriteMemory(f.handle, e.Address, e.Value)
+				if err != nil {
+					f.failCounts[id]++
+					Log.Error("Freeze write failed: id=%d addr=0x%X err=%v (fail %d/%d)",
+						id, e.Address, err, f.failCounts[id], freezeMaxFails)
+					if f.failCounts[id] >= freezeMaxFails {
+						e.Active = false
+						fmt.Printf("\n  [freeze] auto-deactivated 0x%X after %d failures: %v\n> ",
+							e.Address, freezeMaxFails, err)
 					}
+				} else {
+					f.failCounts[id] = 0 // reset on success
 				}
 			}
 			f.mu.Unlock()
