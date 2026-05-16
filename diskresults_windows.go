@@ -47,11 +47,17 @@ type diskWriter struct {
 	valSize  int
 }
 
+func scanDir() string {
+	dir := filepath.Join(exeDir(), "memhacker_scans")
+	os.MkdirAll(dir, 0755)
+	return dir
+}
+
 func newDiskWriter(valSize int) (*diskWriter, error) {
 	gen := atomic.AddInt32(&diskResGen, 1)
-	dir := exeDir()
-	addrPath := filepath.Join(dir, fmt.Sprintf("memhacker_scan_%d.addr", gen))
-	valPath  := filepath.Join(dir, fmt.Sprintf("memhacker_scan_%d.vals", gen))
+	dir := scanDir()
+	addrPath := filepath.Join(dir, fmt.Sprintf("scan_%d.addr", gen))
+	valPath  := filepath.Join(dir, fmt.Sprintf("scan_%d.vals", gen))
 
 	af, err := os.Create(addrPath)
 	if err != nil { return nil, fmt.Errorf("addr file: %v", err) }

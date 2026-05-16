@@ -29,7 +29,7 @@ type memSnapshot struct {
 }
 
 func newMemSnapshot(valSize int) (*memSnapshot, error) {
-	path := filepath.Join(exeDir(), "memhacker_snapshot.snap")
+	path := filepath.Join(scanDir(), "snapshot.snap")
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create snapshot file: %v", err)
