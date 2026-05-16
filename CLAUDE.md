@@ -256,8 +256,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 | v1.9.0 | NextScan batch reads, loglast, AppVersion in logs |
 | v2.0.0 | Full DFS rewrite (CE-style), noLoop, maxOffsetsPerNode, offset reversal fix, pmadd fix |
 | v2.1.0 | Game root detection fix (iterative strip, UE5 + simple bin dirs), LoadPointerMap game root fix, fast module lookup (binary search), partial case-insensitive attach, prlabel fix, DFS speed (lockless channel, inlined binary search, smaller job structs, larger queue), default depth=5 offset=8192, prlist filter (ok/addr), parallel sessions, auto-save pscan_last_N.json (no overwrite), verify-then-cap in pscan output, pmload multiple files, float scan ±0.1 tolerance, NaN/Inf filter, session labels on progress ticker, pscan JSON data type fix |
+| v2.2.0 | Disk-backed scan results (unknown scan snapshot + all results >1M to disk), CE page-grouping NextScan, gap-based address grouping, scan progress output, writable-only scan default, region filter, scan range/cap/all keywords, iread/iwrite/ifreeze commands, sortable results, position-based unfreeze, unfreeze all/by-address, scan confirmation guard, Ctrl+C cancel, results index display, regions command, CHANGED status in prverify, no VirtualProtectEx (direct write only), freeze silently handles failures. Verified on a popular racing game (open world, 64-bit). |
 
-Current: **v2.1.0** (AppVersion in `logger.go`)
+Current: **v2.2.0** (AppVersion in `logger.go`)
 
 ---
 

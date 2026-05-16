@@ -1,4 +1,4 @@
-# MemHacker v2.1.0
+# MemHacker v2.2.0
 
 A Cheat Engine alternative written in Go — memory scanner, CE-style multi-session pointer scan, value freeze.
 
@@ -267,4 +267,4 @@ prfreeze 1 999            <- or freeze
 - Float `scan exact` uses ±1.0 tolerance automatically — catches imprecise game values
 - Scan defaults to writable private memory — append `all` for full scan (much slower)
 - Log file: `memhacker.log` next to the exe
-- Verified working: SurrounDead (UE5 64-bit), Mount & Blade Warband (32-bit WOW64)
+- Verified working: SurrounDead (UE5 64-bit), Mount & Blade Warband (32-bit WOW64), a popular open-world racing game (64-bit) — pointer chains survived restarts
