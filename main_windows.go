@@ -211,93 +211,86 @@ func printBanner() {
 func printHelp() {
 	fmt.Println(`
 PROCESS
-  ps / list              - list all running processes
-  open <pid|name>        - attach to a process
-  close                  - detach
-  modules                - list loaded modules
+  ps / list                     - list running processes
+  open <pid|name>               - attach (partial name ok: open surro -> SurrounDead.exe)
+  close                         - detach
+  modules                       - list loaded DLLs (GAME/SYSTEM/OTHER)
+  regions [all]                 - list scannable memory regions with addresses/sizes
 
-SCANNING
-  type <dt>              - set data type (i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 str bytes)
-  scan <type> [value] [all] [range <lo> <hi>] [cap <n>] - first scan
-                           default: writable private memory only; 'all' for full scan
-                           range: limit to address range  e.g: scan exact 100 range 0x1000000 0x2000000
-                           cap:   stop after N results    e.g: scan exact 0 cap 50000
-    types: exact <v>  unknown  bigger <v>  smaller <v>  between <v1> <v2>
-           changed  unchanged  increased  decreased  incby <v>  decby <v>  notequal <v>
-  next <type> [value]    - filter scan (same types as scan)
-  results [n]            - show top N results (default 20)
-  reset                  - clear scan results
+SCANNING                        (default type: f32, default scope: writable private memory)
+  type <dt>                     - set data type: i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 str bytes
+  scan <type> [value]           - first scan
+    types: exact  unknown  bigger  smaller  between <v1> <v2>
+           changed  unchanged  increased  decreased  incby  decby  notequal
+    keywords (append to any scan):
+      all                       - scan all memory including read-only (slower)
+      range <lo> <hi>           - limit to address range
+      cap <n>                   - stop after N results
+    e.g: scan exact 100
+         scan unknown
+         scan exact 0 cap 50000
+         scan exact 100 range 0x1000000 0x2000000
+         scan between -0.01 0.01 all
+  next <type> [value]           - filter existing results (same types as scan)
+  results [n] [addr|val]        - show top N results, optionally sorted by address or value
+  results <range|list> [addr|val] - show specific results by index
+    e.g: results 20 val         - top 20 sorted by value
+         results 1-5            - show results #1 to #5
+         results 1,3,5 addr     - show #1,#3,#5 sorted by address
+  reset                         - clear scan results (Ctrl+C during scan also clears)
 
 VALUE OPS
-  read <addr> [dt]       - read value at address
-  write <addr> <value>   - write value at address
-  iwrite <idx> <value>   - write to scan result by index (e.g: iwrite 5 100  iwrite 5-7 100  iwrite 1,3,5 100)
-  ifreeze <idx> <value>  - freeze scan result by index  (e.g: ifreeze 5 100  ifreeze 5-7 100)
-  add <addr> [label]     - add to address list
-  addrlist               - show address list
+  read <addr> [dt]              - read value at address
+  write <addr> <value>          - write value at address
+  iread <addr> <index>          - read at addr + index * sizeof(type)
+                                  e.g: iread 0x1A2B3C 4  reads 4th element of f32 array
+  iwrite <idx> <value>          - write to scan result by index
+                                  e.g: iwrite 5 100   iwrite 5-7 100   iwrite 1,3,5 100
+  add <addr> [label]            - add to address list
+  addrlist                      - show address list with live values
 
 FREEZING
-  freeze <addr> <value> [label]  - freeze address to value
-  unfreeze <id|range|list>       - unfreeze by ID (e.g: unfreeze 3  unfreeze 1-5  unfreeze 1,3,5)
-  frozen                         - show frozen entries
+  freeze <addr> <value> [label] - freeze address at value (50ms write loop)
+  ifreeze <idx> <value>         - freeze scan result by index (range/list ok)
+                                  e.g: ifreeze 5 100   ifreeze 5-7 100
+  unfreeze <pos|range|0xADDR>   - unfreeze by position in frozen list, range, or address
+                                  e.g: unfreeze 1   unfreeze 1-3   unfreeze 0x1A2B3C
+  frozen                        - list frozen entries (positions 1,2,3... reset each time)
 
-POINTER SCANNING (CE-style multi-session)
-  pmap                          - build pointer map for current process (in-memory)
+ALIASES
+  alias <name> <addr>           - set alias  e.g: alias hp 0x614DD58
+  alias                         - list all aliases
+  unalias <name>                - remove alias
+  (use alias name anywhere an address is expected: write hp 999  freeze hp 999)
+
+POINTER SCANNING
+  pmap                          - build pointer map (in-memory)
   pmsave <file> <addr>          - build pmap + save + register session
-  pmadd <addr>                  - add another address to last session (CE-style: 1 pmap, N addresses)
-  pmload <file>                 - load saved pmap
-                                  e.g: pmsave s1.pmap 0x1A2B3C4D
-  pmload <file>                 - load saved pmap (target addr read from file)
-                                  e.g: pmload s1.pmap
-  pmsessions                    - list all registered sessions
-  pmclear                       - clear all sessions + pmap
+  pmadd <addr>                  - add another target to last session
+  pmload <f1> [f2] [f3] ...    - load one or more saved pmaps
+  pmsessions                    - list sessions
+  pmclear                       - clear all sessions
 
   pscan [depth] [offset] [max] [filter] [maxOffsets]
-                                - run pointer scan across ALL registered sessions
+                                - scan across all sessions (sessions run in parallel)
                                   filter: exe (default), game, all
-                                  maxOffsets: max pointer value groups per node (default 5, CE default)
-                                             higher = more thorough but exponentially slower
-                                  defaults: depth=5 offset=8192 max=100 filter=exe maxOffsets=5
-                                  e.g: pscan 5 4000 100
-                                  e.g: pscan 5 4000 100 exe 10
-POINTER RESULTS (save/load/verify chains)
-  prsave <file.json>            - save last pscan results to JSON file
-  prload <file.json> [addr]     - load saved chains
-                                  addr = current session address (chain must resolve to it)
-                                  e.g: prload hp.json 0x614DD58
-  prverify [addr]               - re-verify chains, optional addr = must resolve to this
-                                  e.g: prverify 0x614DD58  or  prverify hp (alias)
-  prlist [addr|ok]              - list chains; addr=only those resolving to addr, ok=only resolvable
-  prwrite <index> <value>       - follow chain, write value once  (e.g: prwrite 1 999)
-  prfreeze <index> <value>      - follow chain, freeze value      (e.g: prfreeze 1 999)
+                                  defaults: depth=5 offset=8192 max=100
+                                  e.g: pscan 5 4000 100   pscan 6 8192 100 game
+  (results auto-saved to pscan_last_N.json, only verified chains shown)
 
-  WORKFLOW (persistent pointers across restarts):
-    pscan                       <- find chains
-    prsave hp.json              <- save them
-    --- game restart ---
-    open game.exe
-    prload hp.json              <- load + auto-verify
-    prwrite 1 999               <- write to chain 1
-    prfreeze 1 999              <- or freeze it
-                                  e.g: pscan 7 4096 200 game
-
-  WORKFLOW:
-    1. open game.exe
-    2. scan exact 100           <- find HP address
-    3. pmsave s1.pmap 0xADDR    <- snapshot pmap + register
-    4. restart game (address changes)
-    5. scan exact 100           <- find new HP address
-    6. pmsave s2.pmap 0xNEWADDR <- second snapshot
-    7. pscan 6 2048 50          <- cross-reference both sessions
+POINTER RESULTS
+  prsave <file.json>            - save chains to file
+  prload <file.json> [addr]     - load chains, optionally filter to those resolving to addr
+  prverify [addr]               - re-verify chains against current process
+  prlist [ok|addr]              - list chains (ok=resolvable only, addr=filter by address)
+  prlabel <index> <label>       - label a chain
+  prwrite <index> <value>       - follow chain, write value
+  prfreeze <index> <value>      - follow chain, freeze value
 
 OTHER
-  alias [name] [addr]  - set/list address aliases (use name instead of hex anywhere)
-                         e.g: alias hp 0x614DD58  then: write hp 999  freeze hp 999
-  unalias <name>       - remove an alias
-  log                  - show log file path
-  loglast [N]          - copy full log to clipboard (last N lines if specified)
-                         includes version header — paste directly into GitHub issue
-  exit / quit          - exit
+  log                           - show log file path
+  loglast [N]                   - copy log to clipboard (paste into GitHub issues)
+  exit / quit / q               - exit
 `)
 }
 
