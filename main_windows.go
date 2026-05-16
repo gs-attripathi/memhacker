@@ -948,10 +948,26 @@ func cmdFreeze(args []string) {
 
 func cmdUnfreeze(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: unfreeze <id|range|list>  e.g: unfreeze 3  unfreeze 1-5  unfreeze 1,3,5")
+		fmt.Println("Usage: unfreeze <id|range|list|0xADDR>")
+		fmt.Println("  e.g: unfreeze 3        <- by ID")
+		fmt.Println("       unfreeze 1-5      <- range of IDs")
+		fmt.Println("       unfreeze 0x1A2B   <- by address")
 		return
 	}
-	indices := parseIndexSpec(args[0])
+	// If argument looks like an address (0x prefix or alias), unfreeze by address
+	arg := args[0]
+	if strings.HasPrefix(strings.ToLower(arg), "0x") || (!strings.Contains(arg, "-") && !strings.Contains(arg, ",")) {
+		if addr, err := resolveAddr(arg); err == nil && addr > 0xFFFF {
+			if freezer.RemoveByAddr(addr) {
+				fmt.Printf("Unfroze 0x%X\n", addr)
+			} else {
+				fmt.Printf("No frozen entry at 0x%X\n", addr)
+			}
+			return
+		}
+	}
+	// Otherwise treat as ID / range / list
+	indices := parseIndexSpec(arg)
 	for _, id := range indices {
 		freezer.Remove(id)
 		fmt.Printf("Unfroze id=%d\n", id)
@@ -968,18 +984,17 @@ func cmdFrozenList() {
 		fmt.Println("No frozen entries")
 		return
 	}
-	fmt.Printf("%-5s  %-6s  %-20s  %-20s  %s\n", "ID", "Active", "Address", "Value", "Label")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Printf("%-5s  %-22s  %-8s  %-12s  %s\n", "ID", "Address", "Active", "Value", "Label")
+	fmt.Println(strings.Repeat("-", 75))
 	for _, e := range list {
 		active := "YES"
-		if !e.Entry.Active {
-			active = "NO"
-		}
-		fmt.Printf("%-5d  %-6s  0x%-18X  %-20s  %s\n",
-			e.ID, active, e.Entry.Address,
+		if !e.Entry.Active { active = "NO" }
+		fmt.Printf("%-5d  0x%-20X  %-8s  %-12s  %s\n",
+			e.ID, e.Entry.Address, active,
 			decodeValue(currentDT, e.Entry.Value),
 			e.Entry.Label)
 	}
+	fmt.Println("\nTip: unfreeze 0xADDR  or  unfreeze <id>")
 }
 
 func cmdBuildPointerMap() {

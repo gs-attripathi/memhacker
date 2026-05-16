@@ -55,6 +55,19 @@ func (f *Freezer) Remove(id int) {
 	}
 }
 
+func (f *Freezer) RemoveByAddr(addr uintptr) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, e := range f.entries {
+		if e.Address == addr {
+			Log.Info("Unfreeze: addr=0x%X id=%d", addr, id)
+			delete(f.entries, id)
+			return true
+		}
+	}
+	return false
+}
+
 func (f *Freezer) Toggle(id int) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
