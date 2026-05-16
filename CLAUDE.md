@@ -261,6 +261,19 @@ Current: **v2.1.0** (AppVersion in `logger.go`)
 
 ---
 
+## README Rules
+
+**Always keep README.md in sync with the code.** Update it whenever:
+- A new command is added or an existing one changes behaviour
+- A command or feature is removed or renamed — remove it from README too
+- Default values change (scan type, depth, offset, etc.)
+- A new temp file or folder is introduced
+- A workflow changes
+
+The README is the user-facing contract. If a feature is trashed or rolled back, remove it from README in the same commit.
+
+---
+
 ## Do Not
 
 - Do not add CGO
