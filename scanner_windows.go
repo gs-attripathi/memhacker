@@ -367,6 +367,8 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		}()
 	}
 
+	var foundCount int64 // atomic — updated as results are collected
+
 	// Progress ticker
 	doneCh := make(chan struct{})
 	go func() {
@@ -378,7 +380,8 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 				return
 			case <-tick.C:
 				d := atomic.LoadInt64(&doneCount)
-				fmt.Printf("\r  ... %d/%d regions | %d results   ", d, total, len(ms.Results))
+				f := atomic.LoadInt64(&foundCount)
+				fmt.Printf("\r  ... %d/%d regions | %d results   ", d, total, f)
 			}
 		}
 	}()
@@ -391,6 +394,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	var all []ScanResult
 	for batch := range resultChan {
 		all = append(all, batch...)
+		atomic.AddInt64(&foundCount, int64(len(batch)))
 	}
 	close(doneCh)
 
