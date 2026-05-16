@@ -978,9 +978,9 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 					atomic.AddInt64(&kept, 1)
 				}
 			}
-			atomic.AddInt64(&processed, int64(n))
 			i = j
 		}
+		atomic.AddInt64(&processed, int64(n)) // once per chunk, after all page groups
 	}
 
 	close(doneCh)
