@@ -567,9 +567,9 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	// Guard: confirm before wiping existing results
 	if scanner != nil && scanner.totalResults() > 0 {
 		total := scanner.totalResults()
-		fmt.Printf("  You have %d results. Starting a new scan will clear them. Continue? (y/n): ", total)
+		fmt.Printf("  You have %d results. Starting a new scan will clear them. Type 'yes' to confirm: ", total)
 		line, _ := reader.ReadString('\n')
-		if strings.ToLower(strings.TrimSpace(line)) != "y" {
+		if strings.ToLower(strings.TrimSpace(line)) != "yes" {
 			fmt.Println("  Cancelled.")
 			return
 		}
