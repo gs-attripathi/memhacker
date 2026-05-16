@@ -355,9 +355,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	close(jobs)
 
 	var doneCount int64
-	numWorkers := runtime.NumCPU() * 2 // 2x CPUs: ReadProcessMemory has kernel wait time
-	resultChan := make(chan []ScanResult, numWorkers*4)
-	var wg sync.WaitGroup
+	numCPU := runtime.NumCPU()
 
 	isFloat   := params.DT == TypeFloat32 || params.DT == TypeFloat64
 	isNumeric := params.DT != TypeString && params.DT != TypeBytes
@@ -367,17 +365,44 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		sz = len(params.Value)
 	}
 
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
+	// Pipeline: readers and scanners run concurrently.
+	// Readers do ReadProcessMemory (kernel I/O, blocks per call).
+	// Scanners process the data CPU-side.
+	// While scanners work on chunk N, readers are already fetching chunk N+1.
+
+	type readResult struct {
+		addr uintptr
+		data []byte
+	}
+
+	// numCPU readers — RPM is a blocking kernel call, more goroutines = more concurrent reads
+	readCh := make(chan readResult, numCPU*2) // buffer so readers pre-fetch while scanners work
+	var readerWg sync.WaitGroup
+	for i := 0; i < numCPU; i++ {
+		readerWg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer readerWg.Done()
 			for chunk := range jobs {
 				data, err := ReadMemory(ms.handle, chunk.addr, chunk.size)
 				atomic.AddInt64(&doneCount, 1)
 				if err != nil || len(data) < sz || sz == 0 {
 					continue
 				}
+				readCh <- readResult{chunk.addr, data}
+			}
+		}()
+	}
+	go func() { readerWg.Wait(); close(readCh) }()
 
+	// numCPU scanners — pure CPU work, NumCPU is optimal
+	resultChan := make(chan []ScanResult, numCPU*4)
+	var scanWg sync.WaitGroup
+	for i := 0; i < numCPU; i++ {
+		scanWg.Add(1)
+		go func() {
+			defer scanWg.Done()
+			for rr := range readCh {
+				data, addr := rr.data, rr.addr
 				var local []ScanResult
 
 				// Fast path: exact non-float — bytes.Index (SIMD), shared value slice
@@ -391,7 +416,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 						idx := bytes.Index(searchIn, needle)
 						if idx < 0 { break }
 						local = append(local, ScanResult{
-							Address: chunk.addr + uintptr(offset+idx),
+							Address: addr + uintptr(offset+idx),
 							Value:   sharedVal,
 						})
 						advance := idx + 1
@@ -402,10 +427,9 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 					step := 1
 					if isNumeric { step = sz }
 
-					// Align scan start to value size within this chunk
 					startOff := 0
 					if isNumeric && sz > 1 {
-						if rem := int(chunk.addr) % sz; rem != 0 {
+						if rem := int(addr) % sz; rem != 0 {
 							startOff = sz - rem
 						}
 					}
@@ -425,7 +449,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 									cp := arena[arenaOff : arenaOff+4 : arenaOff+4]
 									cp[0], cp[1], cp[2], cp[3] = data[i], data[i+1], data[i+2], data[i+3]
 									arenaOff += 4
-									local = append(local, ScanResult{Address: chunk.addr + uintptr(i), Value: cp})
+									local = append(local, ScanResult{Address: addr + uintptr(i), Value: cp})
 								}
 							}
 						} else {
@@ -437,7 +461,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 									cp := arena[arenaOff : arenaOff+8 : arenaOff+8]
 									copy(cp, data[i:i+8])
 									arenaOff += 8
-									local = append(local, ScanResult{Address: chunk.addr + uintptr(i), Value: cp})
+									local = append(local, ScanResult{Address: addr + uintptr(i), Value: cp})
 								}
 							}
 						}
@@ -449,7 +473,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 								cp := arena[arenaOff : arenaOff+sz : arenaOff+sz]
 								copy(cp, c)
 								arenaOff += sz
-								local = append(local, ScanResult{Address: chunk.addr + uintptr(i), Value: cp})
+								local = append(local, ScanResult{Address: addr + uintptr(i), Value: cp})
 							}
 						}
 					}
@@ -461,6 +485,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 			}
 		}()
 	}
+	go func() { scanWg.Wait(); close(resultChan) }()
 
 	var foundCount int64
 
@@ -479,11 +504,6 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 				fmt.Printf("\r  ... %d/%d chunks | %d results   ", d, total, f)
 			}
 		}
-	}()
-
-	go func() {
-		wg.Wait()
-		close(resultChan)
 	}()
 
 	var all []ScanResult
