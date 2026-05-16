@@ -330,11 +330,19 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	regions := EnumMemoryRegions(ms.handle, params.Writable)
 	Log.Debug("FirstScan: scanning %d memory regions", len(regions))
 
-	// Split every region into fixed 4MB chunks so all workers get equal-sized work.
-	// Large regions (Forza has 500MB+ regions) would block one worker for ages without this.
-	const chunkSize = 4 * 1024 * 1024
+	// Split regions into 4MB chunks for parallel work.
+	// Skip regions > 128MB when scanning writable-only: those are allocator pools /
+	// streaming caches (mostly paged to disk). Game values are never in a single
+	// contiguous allocation > 128MB. Use 'scan <type> all' to include them.
+	const chunkSize   = 4 * 1024 * 1024
+	const maxRegionSz = 128 * 1024 * 1024
 	var chunks []scanChunk
+	skipped := 0
 	for _, r := range regions {
+		if params.Writable && r.RegionSize > maxRegionSz {
+			skipped++
+			continue
+		}
 		for off := uintptr(0); off < r.RegionSize; off += chunkSize {
 			sz := r.RegionSize - off
 			if sz > chunkSize {
@@ -344,7 +352,11 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		}
 	}
 	total := len(chunks)
-	fmt.Printf("  scanning %d regions (%d chunks)...\n", len(regions), total)
+	if skipped > 0 {
+		fmt.Printf("  scanning %d regions (%d chunks, skipped %d large regions >128MB)...\n", len(regions)-skipped, total, skipped)
+	} else {
+		fmt.Printf("  scanning %d regions (%d chunks)...\n", len(regions), total)
+	}
 
 	nzf := buildNearZeroFast(params)
 
