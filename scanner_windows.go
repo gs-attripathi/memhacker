@@ -320,50 +320,67 @@ func buildNearZeroFast(params ScanParams) nearZeroFast {
 	return nearZeroFast{enabled: true, abits64: math.Float64bits(aMax)}
 }
 
+type scanChunk struct {
+	addr uintptr
+	size int
+}
+
 func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	Log.Info("FirstScan: type=%s scan=%d writable=%v", dataTypeName(params.DT), params.ST, params.Writable)
 	regions := EnumMemoryRegions(ms.handle, params.Writable)
-	total := len(regions)
-	Log.Debug("FirstScan: scanning %d memory regions", total)
-	fmt.Printf("  scanning %d regions...\n", total)
-	numCPU := runtime.NumCPU()
+	Log.Debug("FirstScan: scanning %d memory regions", len(regions))
 
-	nzf := buildNearZeroFast(params) // pre-compute integer fast path for near-zero float scans
-
-	jobs := make(chan MEMORY_BASIC_INFORMATION, total)
+	// Split every region into fixed 4MB chunks so all workers get equal-sized work.
+	// Large regions (Forza has 500MB+ regions) would block one worker for ages without this.
+	const chunkSize = 4 * 1024 * 1024
+	var chunks []scanChunk
 	for _, r := range regions {
-		jobs <- r
+		for off := uintptr(0); off < r.RegionSize; off += chunkSize {
+			sz := r.RegionSize - off
+			if sz > chunkSize {
+				sz = chunkSize
+			}
+			chunks = append(chunks, scanChunk{r.BaseAddress + off, int(sz)})
+		}
+	}
+	total := len(chunks)
+	fmt.Printf("  scanning %d regions (%d chunks)...\n", len(regions), total)
+
+	nzf := buildNearZeroFast(params)
+
+	jobs := make(chan scanChunk, total)
+	for _, c := range chunks {
+		jobs <- c
 	}
 	close(jobs)
 
 	var doneCount int64
-	resultChan := make(chan []ScanResult, numCPU*4)
+	numWorkers := runtime.NumCPU() * 2 // 2x CPUs: ReadProcessMemory has kernel wait time
+	resultChan := make(chan []ScanResult, numWorkers*4)
 	var wg sync.WaitGroup
 
-	isFloat    := params.DT == TypeFloat32 || params.DT == TypeFloat64
-	isNumeric  := params.DT != TypeString && params.DT != TypeBytes
+	isFloat   := params.DT == TypeFloat32 || params.DT == TypeFloat64
+	isNumeric := params.DT != TypeString && params.DT != TypeBytes
 
-	for i := 0; i < numCPU; i++ {
+	sz := dataTypeSize(params.DT)
+	if params.DT == TypeString || params.DT == TypeBytes {
+		sz = len(params.Value)
+	}
+
+	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for r := range jobs {
-				data, err := ReadMemory(ms.handle, r.BaseAddress, int(r.RegionSize))
+			for chunk := range jobs {
+				data, err := ReadMemory(ms.handle, chunk.addr, chunk.size)
 				atomic.AddInt64(&doneCount, 1)
-				if err != nil || len(data) == 0 {
-					continue
-				}
-				sz := dataTypeSize(params.DT)
-				if params.DT == TypeString || params.DT == TypeBytes {
-					sz = len(params.Value)
-				}
-				if sz == 0 {
+				if err != nil || len(data) < sz || sz == 0 {
 					continue
 				}
 
 				var local []ScanResult
 
-				// Fast path: exact non-float scan — bytes.Index (SIMD), shared value slice
+				// Fast path: exact non-float — bytes.Index (SIMD), shared value slice
 				if params.ST == ScanExact && !isFloat && len(params.Value) == sz {
 					needle := params.Value[:sz]
 					sharedVal := make([]byte, sz)
@@ -372,67 +389,67 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 					offset := 0
 					for {
 						idx := bytes.Index(searchIn, needle)
-						if idx < 0 {
-							break
-						}
+						if idx < 0 { break }
 						local = append(local, ScanResult{
-							Address: r.BaseAddress + uintptr(offset+idx),
-							Value:   sharedVal, // all exact matches share one value copy
+							Address: chunk.addr + uintptr(offset+idx),
+							Value:   sharedVal,
 						})
 						advance := idx + 1
 						offset += advance
 						searchIn = searchIn[advance:]
 					}
 				} else {
-					// General path — aligned scan (CE default: step by value size, not 1 byte)
-					// + arena allocation (one large alloc per region, not one per match)
 					step := 1
-					if isNumeric {
-						step = sz
+					if isNumeric { step = sz }
+
+					// Align scan start to value size within this chunk
+					startOff := 0
+					if isNumeric && sz > 1 {
+						if rem := int(chunk.addr) % sz; rem != 0 {
+							startOff = sz - rem
+						}
 					}
+
 					const arenaBlock = 65536
 					arena := make([]byte, arenaBlock*sz)
 					arenaOff := 0
 					local = make([]ScanResult, 0, 64)
 
 					if nzf.enabled {
-						// Integer fast path for symmetric near-zero float ranges.
-						// (bits & 0x7FFF...) <= abits is equivalent to |v| <= threshold
-						// with no float conversion — ~4x faster than compareValues.
 						if nzf.is32 {
 							abits := nzf.abits32
-							for i := 0; i <= len(data)-4; i += 4 {
+							for i := startOff; i <= len(data)-4; i += 4 {
 								v := binary.LittleEndian.Uint32(data[i:])
 								if v&0x7FFFFFFF <= abits {
 									if arenaOff+4 > len(arena) { arena = make([]byte, arenaBlock*4); arenaOff = 0 }
 									cp := arena[arenaOff : arenaOff+4 : arenaOff+4]
 									cp[0], cp[1], cp[2], cp[3] = data[i], data[i+1], data[i+2], data[i+3]
 									arenaOff += 4
-									local = append(local, ScanResult{Address: r.BaseAddress + uintptr(i), Value: cp})
+									local = append(local, ScanResult{Address: chunk.addr + uintptr(i), Value: cp})
 								}
 							}
 						} else {
 							abits := nzf.abits64
-							for i := 0; i <= len(data)-8; i += 8 {
+							for i := startOff; i <= len(data)-8; i += 8 {
 								v := binary.LittleEndian.Uint64(data[i:])
 								if v&0x7FFFFFFFFFFFFFFF <= abits {
 									if arenaOff+8 > len(arena) { arena = make([]byte, arenaBlock*8); arenaOff = 0 }
 									cp := arena[arenaOff : arenaOff+8 : arenaOff+8]
 									copy(cp, data[i:i+8])
 									arenaOff += 8
-									local = append(local, ScanResult{Address: r.BaseAddress + uintptr(i), Value: cp})
+									local = append(local, ScanResult{Address: chunk.addr + uintptr(i), Value: cp})
 								}
 							}
 						}
 					} else {
-						for i := 0; i <= len(data)-sz; i += step {
-							chunk := data[i : i+sz]
-							if compareValues(params.DT, nil, chunk, params.Value, params.Value2, params.ST, params.Tolerance) {
+						for i := startOff; i <= len(data)-sz; i += step {
+							c := data[i : i+sz]
+							if compareValues(params.DT, nil, c, params.Value, params.Value2, params.ST, params.Tolerance) {
 								if arenaOff+sz > len(arena) { arena = make([]byte, arenaBlock*sz); arenaOff = 0 }
 								cp := arena[arenaOff : arenaOff+sz : arenaOff+sz]
-								copy(cp, chunk)
+								copy(cp, c)
 								arenaOff += sz
-								local = append(local, ScanResult{Address: r.BaseAddress + uintptr(i), Value: cp})
+								local = append(local, ScanResult{Address: chunk.addr + uintptr(i), Value: cp})
 							}
 						}
 					}
@@ -445,7 +462,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		}()
 	}
 
-	var foundCount int64 // atomic — updated as results are collected
+	var foundCount int64
 
 	// Progress ticker
 	doneCh := make(chan struct{})
@@ -459,7 +476,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 			case <-tick.C:
 				d := atomic.LoadInt64(&doneCount)
 				f := atomic.LoadInt64(&foundCount)
-				fmt.Printf("\r  ... %d/%d regions | %d results   ", d, total, f)
+				fmt.Printf("\r  ... %d/%d chunks | %d results   ", d, total, f)
 			}
 		}
 	}()
