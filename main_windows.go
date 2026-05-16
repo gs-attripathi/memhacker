@@ -215,9 +215,10 @@ PROCESS
 
 SCANNING
   type <dt>              - set data type (i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 str bytes)
-  scan <type> [value] [all] [range <lo> <hi>] - first scan
+  scan <type> [value] [all] [range <lo> <hi>] [cap <n>] - first scan
                            default: writable private memory only; 'all' for full scan
                            range: limit to address range  e.g: scan exact 100 range 0x1000000 0x2000000
+                           cap:   stop after N results    e.g: scan exact 0 cap 50000
     types: exact <v>  unknown  bigger <v>  smaller <v>  between <v1> <v2>
            changed  unchanged  increased  decreased  incby <v>  decby <v>  notequal <v>
   next <type> [value]    - filter scan (same types as scan)
@@ -562,9 +563,10 @@ func cmdScan(args []string, reader *bufio.Reader) {
 		return
 	}
 
-	// Strip optional keywords: "all", "range <lo> <hi>"
+	// Strip optional keywords: "all", "range <lo> <hi>", "cap <n>"
 	scanAll := false
 	var rangeLo, rangeHi uintptr
+	var resultCap int
 	filtered := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch strings.ToLower(args[i]) {
@@ -582,6 +584,11 @@ func cmdScan(args []string, reader *bufio.Reader) {
 					return
 				}
 			}
+		case "cap":
+			if i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &resultCap)
+				i++
+			}
 		default:
 			filtered = append(filtered, args[i])
 		}
@@ -595,13 +602,13 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	p.Writable = !scanAll
 	p.RangeLo = rangeLo
 	p.RangeHi = rangeHi
+	p.ResultCap = resultCap
 	scope := "writable"
 	if scanAll { scope = "all" }
-	if rangeLo > 0 {
-		fmt.Printf("Scanning for %s [type=%s scope=%s range=0x%X-0x%X]...\n", args[0], dataTypeName(currentDT), scope, rangeLo, rangeHi)
-	} else {
-		fmt.Printf("Scanning for %s [type=%s scope=%s]...\n", args[0], dataTypeName(currentDT), scope)
-	}
+	info := fmt.Sprintf("type=%s scope=%s", dataTypeName(currentDT), scope)
+	if rangeLo > 0 { info += fmt.Sprintf(" range=0x%X-0x%X", rangeLo, rangeHi) }
+	if resultCap > 0 { info += fmt.Sprintf(" cap=%d", resultCap) }
+	fmt.Printf("Scanning for %s [%s]...\n", args[0], info)
 	start := time.Now()
 	count := scanner.FirstScan(p)
 	elapsed := time.Since(start)

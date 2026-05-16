@@ -543,11 +543,19 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	for batch := range resultChan {
 		all = append(all, batch...)
 		atomic.AddInt64(&foundCount, int64(len(batch)))
+		if params.ResultCap > 0 && len(all) >= params.ResultCap {
+			atomic.StoreInt32(&scanCancelFlag, 1) // stop readers/scanners
+			all = all[:params.ResultCap]
+			break
+		}
 	}
+	// drain resultChan so scanner goroutines can exit
+	for range resultChan {}
 	close(doneCh)
 
 	fmt.Println() // end the \r progress line
-	if atomic.LoadInt32(&scanCancelFlag) != 0 {
+	if atomic.LoadInt32(&scanCancelFlag) != 0 && params.ResultCap == 0 {
+		// Only treat as user cancel if not a cap stop
 		ms.Results = nil
 		fmt.Println("  Scan cancelled — results cleared for fresh start.")
 		return 0

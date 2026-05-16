@@ -83,6 +83,7 @@ type ScanParams struct {
 	Executable bool
 	RangeLo    uintptr // if set, only scan addresses >= RangeLo
 	RangeHi    uintptr // if set, only scan addresses < RangeHi
+	ResultCap  int     // if > 0, stop collecting after this many results
 }
 
 // FrozenEntry - address being frozen to a value
