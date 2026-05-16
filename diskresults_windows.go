@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 )
 
 // CE-compatible disk result storage.
@@ -19,6 +20,10 @@ const (
 	diskResThreshold = 1_000_000 // switch to disk above this many results
 	diskWriteBufSize = 4 * 1024 * 1024 // 4MB write buffer
 )
+
+// generation counter ensures new scan files don't clobber old ones that are
+// still being read. Each call to newDiskWriter gets a unique generation number.
+var diskResGen int32
 
 // exeDir returns the directory of the running executable.
 func exeDir() string {
@@ -43,9 +48,10 @@ type diskWriter struct {
 }
 
 func newDiskWriter(valSize int) (*diskWriter, error) {
+	gen := atomic.AddInt32(&diskResGen, 1)
 	dir := exeDir()
-	addrPath := filepath.Join(dir, "memhacker_scan.addr")
-	valPath  := filepath.Join(dir, "memhacker_scan.vals")
+	addrPath := filepath.Join(dir, fmt.Sprintf("memhacker_scan_%d.addr", gen))
+	valPath  := filepath.Join(dir, fmt.Sprintf("memhacker_scan_%d.vals", gen))
 
 	af, err := os.Create(addrPath)
 	if err != nil { return nil, fmt.Errorf("addr file: %v", err) }
