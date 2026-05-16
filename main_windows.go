@@ -662,6 +662,27 @@ func cmdNext(args []string, reader *bufio.Reader) {
 }
 
 func cmdResults(args []string) {
+	if len(args) > 0 && (strings.Contains(args[0], "-") || strings.Contains(args[0], ",")) {
+		// Index-based: results 1-5 or results 1,3,5
+		if scanner == nil || scanner.totalResults() == 0 {
+			fmt.Println("No results")
+			return
+		}
+		indices := parseIndexSpec(args[0])
+		fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
+		fmt.Println(strings.Repeat("-", 45))
+		for _, idx := range indices {
+			if idx < 1 || idx > scanner.totalResults() {
+				fmt.Printf("%-5d  out of range\n", idx)
+				continue
+			}
+			addr, _ := scanner.getResult(idx - 1)
+			val, err := scanner.ReadCurrentValue(addr, currentDT)
+			if err != nil { val = "?" }
+			fmt.Printf("%-5d  0x%-18X  %s\n", idx, addr, val)
+		}
+		return
+	}
 	n := 20
 	if len(args) > 0 {
 		n, _ = strconv.Atoi(args[0])
