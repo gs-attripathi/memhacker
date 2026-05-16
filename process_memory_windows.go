@@ -155,32 +155,6 @@ func CloseProcessHandle(handle windows.Handle) {
 	windows.CloseHandle(handle)
 }
 
-// checkWriteSafe queries the memory region at addr and returns a warning string
-// if writing there is likely to crash the game. Empty string = safe to write.
-func checkWriteSafe(handle windows.Handle, addr uintptr) string {
-	mbi, err := QueryRegion(handle, addr)
-	if err != nil {
-		return fmt.Sprintf("cannot query region at 0x%X: %v", addr, err)
-	}
-	if mbi.State != MEM_COMMIT {
-		return fmt.Sprintf("0x%X is not committed memory", addr)
-	}
-	if mbi.Protect&PAGE_GUARD != 0 {
-		return fmt.Sprintf("0x%X has PAGE_GUARD — writing will trigger exception", addr)
-	}
-	if mbi.Protect&PAGE_NOACCESS != 0 {
-		return fmt.Sprintf("0x%X is PAGE_NOACCESS", addr)
-	}
-	const MEM_MAPPED = 0x40000
-	const MEM_IMAGE  = 0x1000000
-	if mbi.Type == MEM_IMAGE {
-		return fmt.Sprintf("0x%X is inside a module/DLL — writing here can crash the game", addr)
-	}
-	if mbi.Type == MEM_MAPPED {
-		return fmt.Sprintf("0x%X is a memory-mapped file region — writing here can crash the game", addr)
-	}
-	return ""
-}
 
 func ReadMemory(handle windows.Handle, addr uintptr, size int) ([]byte, error) {
 	buf := make([]byte, size)

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -140,12 +139,8 @@ func (f *Freezer) loop() {
 			f.mu.Lock()
 			for id, e := range f.entries {
 				if !e.Active { continue }
-				err := WriteMemory(f.handle, e.Address, e.Value)
-				if err != nil {
-					// Not writable — say it once, deactivate, never mention again
-					e.Active = false
-					fmt.Printf("\n  [freeze] 0x%X not writable — deactivated\n> ", e.Address)
-					Log.Warn("Freeze deactivated: id=%d addr=0x%X err=%v", id, e.Address, err)
+				if err := WriteMemory(f.handle, e.Address, e.Value); err != nil {
+					Log.Debug("Freeze write: id=%d addr=0x%X err=%v", id, e.Address, err)
 				}
 			}
 			f.mu.Unlock()
