@@ -222,6 +222,11 @@ func isWritable(mbi *MEMORY_BASIC_INFORMATION) bool {
 	return mbi.Protect&uint32(0x04|0x08|0x40|0x80) != 0
 }
 
+func isPrivate(mbi *MEMORY_BASIC_INFORMATION) bool {
+	const MEM_PRIVATE = 0x20000
+	return mbi.Type == MEM_PRIVATE
+}
+
 func EnumMemoryRegions(handle windows.Handle, writableOnly bool) []MEMORY_BASIC_INFORMATION {
 	var regions []MEMORY_BASIC_INFORMATION
 	addr := uintptr(0x10000)
@@ -238,7 +243,7 @@ func EnumMemoryRegions(handle windows.Handle, writableOnly bool) []MEMORY_BASIC_
 			continue
 		}
 		if isReadable(mbi) {
-			if !writableOnly || isWritable(mbi) {
+			if !writableOnly || (isWritable(mbi) && isPrivate(mbi)) {
 				regions = append(regions, *mbi)
 			}
 		}
