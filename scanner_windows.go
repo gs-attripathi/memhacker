@@ -267,12 +267,20 @@ func pointerSize() int {
 }
 
 type MemoryScanner struct {
-	handle  windows.Handle
-	Results []ScanResult
+	handle   windows.Handle
+	Results  []ScanResult
+	snapshot *memSnapshot // non-nil after ScanUnknown first scan
 }
 
 func NewMemoryScanner(handle windows.Handle) *MemoryScanner {
 	return &MemoryScanner{handle: handle}
+}
+
+func (ms *MemoryScanner) clearSnapshot() {
+	if ms.snapshot != nil {
+		ms.snapshot.close()
+		ms.snapshot = nil
+	}
 }
 
 // nearZeroFast holds pre-computed params for the integer-comparison fast path.
@@ -338,6 +346,16 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		atomic.StoreInt32(&scanActive, 0)
 		atomic.StoreInt32(&scanCancelFlag, 0)
 	}()
+
+	ms.clearSnapshot()
+
+	// Unknown scan: snapshot entire memory to disk instead of storing per-address results.
+	// CE does this via TScanFileWriter with async dual-buffer writes.
+	// Avoids GBs of RAM for games with huge writable address spaces.
+	if params.ST == ScanUnknown {
+		return ms.firstScanUnknown(params)
+	}
+
 	regions := EnumMemoryRegions(ms.handle, params.Writable)
 	Log.Debug("FirstScan: scanning %d memory regions", len(regions))
 
@@ -565,7 +583,211 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	return len(all)
 }
 
+// firstScanUnknown snapshots all scanned memory to disk — no per-address RAM allocation.
+// Returns approximate count of aligned addresses available for next scan.
+func (ms *MemoryScanner) firstScanUnknown(params ScanParams) int {
+	regions := EnumMemoryRegions(ms.handle, params.Writable)
+
+	sz := dataTypeSize(params.DT)
+	if sz == 0 { sz = 4 }
+
+	const chunkSize   = 4 * 1024 * 1024
+	const maxRegionSz = 128 * 1024 * 1024
+	var chunks []scanChunk
+	for _, r := range regions {
+		if params.Writable && r.RegionSize > maxRegionSz { continue }
+		rEnd := r.BaseAddress + r.RegionSize
+		lo, hi := r.BaseAddress, rEnd
+		if params.RangeLo > 0 && params.RangeLo > lo { lo = params.RangeLo }
+		if params.RangeHi > 0 && params.RangeHi < hi { hi = params.RangeHi }
+		if lo >= hi { continue }
+		for off := lo - r.BaseAddress; off < hi-r.BaseAddress; off += uintptr(chunkSize) {
+			csz := hi - r.BaseAddress - off
+			if csz > uintptr(chunkSize) { csz = uintptr(chunkSize) }
+			chunks = append(chunks, scanChunk{r.BaseAddress + off, int(csz)})
+		}
+	}
+	total := len(chunks)
+	fmt.Printf("  snapshotting %d chunks to disk...\n", total)
+
+	snap, err := newMemSnapshot(sz)
+	if err != nil {
+		fmt.Printf("  snapshot failed (%v) — falling back to in-memory unknown scan\n", err)
+		// Fall back: mark all regions as one big result set — not ideal but functional
+		ms.Results = nil
+		return 0
+	}
+
+	jobs := make(chan scanChunk, total)
+	for _, c := range chunks { jobs <- c }
+	close(jobs)
+
+	var doneCount int64
+	numCPU := runtime.NumCPU()
+
+	// Readers send raw data to a single writer goroutine (sequential file writes)
+	type rawChunk struct{ addr uintptr; data []byte }
+	writeCh := make(chan rawChunk, numCPU*2)
+
+	var readerWg sync.WaitGroup
+	for i := 0; i < numCPU; i++ {
+		readerWg.Add(1)
+		go func() {
+			defer readerWg.Done()
+			for chunk := range jobs {
+				if atomic.LoadInt32(&scanCancelFlag) != 0 {
+					atomic.AddInt64(&doneCount, 1)
+					continue
+				}
+				data, err := ReadMemory(ms.handle, chunk.addr, chunk.size)
+				atomic.AddInt64(&doneCount, 1)
+				if err != nil || len(data) == 0 { continue }
+				writeCh <- rawChunk{chunk.addr, data}
+			}
+		}()
+	}
+	go func() { readerWg.Wait(); close(writeCh) }()
+
+	// Single writer goroutine — sequential writes = correct file offsets
+	var writerWg sync.WaitGroup
+	writerWg.Add(1)
+	go func() {
+		defer writerWg.Done()
+		for rc := range writeCh {
+			snap.writeChunk(rc.addr, rc.data)
+		}
+	}()
+
+	// Progress ticker
+	doneCh := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-doneCh:
+				return
+			case <-tick.C:
+				d := atomic.LoadInt64(&doneCount)
+				fmt.Printf("\r  ... %d/%d chunks | %.1f MB snapshotted   ", d, total, float64(snap.fileOff)/(1024*1024))
+			}
+		}
+	}()
+
+	writerWg.Wait()
+	close(doneCh)
+	fmt.Println()
+
+	if atomic.LoadInt32(&scanCancelFlag) != 0 {
+		snap.close()
+		ms.Results = nil
+		fmt.Println("  Scan cancelled — results cleared for fresh start.")
+		return 0
+	}
+
+	ms.snapshot = snap
+	ms.Results = nil
+	count := snap.countAddresses()
+	fmt.Printf("  Snapshot complete: %.1f MB on disk, ~%d addresses ready\n",
+		float64(snap.fileOff)/(1024*1024), count)
+	Log.Info("firstScanUnknown: %.1fMB snapshotted, ~%d addresses", float64(snap.fileOff)/(1024*1024), count)
+	return count
+}
+
+// nextScanFromSnapshot compares live memory against the snapshot for the first
+// next scan after an unknown first scan. Produces a normal result set.
+func (ms *MemoryScanner) nextScanFromSnapshot(params ScanParams) int {
+	snap := ms.snapshot
+	ms.snapshot = nil
+	defer snap.close()
+
+	sz := dataTypeSize(params.DT)
+	if params.DT == TypeString || params.DT == TypeBytes { sz = len(params.Value) }
+	if sz == 0 { return 0 }
+
+	fmt.Printf("  comparing snapshot vs live memory (%d chunks)...\n", len(snap.chunks))
+
+	numCPU := runtime.NumCPU()
+
+	type chunkResult struct{ results []ScanResult }
+	resultCh := make(chan chunkResult, numCPU*2)
+
+	jobs := make(chan snapshotChunk, len(snap.chunks))
+	for _, c := range snap.chunks { jobs <- c }
+	close(jobs)
+
+	var wg sync.WaitGroup
+	for i := 0; i < numCPU; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nzf := buildNearZeroFast(params)
+			const arenaBlock = 65536
+			arena := make([]byte, arenaBlock*sz)
+			arenaOff := 0
+
+			for c := range jobs {
+				oldData, err := snap.readChunk(c)
+				if err != nil { continue }
+				newData, err := ReadMemory(ms.handle, c.addr, c.size)
+				if err != nil || len(newData) < sz { continue }
+
+				limit := len(oldData)
+				if len(newData) < limit { limit = len(newData) }
+
+				startOff := 0
+				if sz > 1 {
+					if rem := int(c.addr) % sz; rem != 0 { startOff = sz - rem }
+				}
+
+				var local []ScanResult
+				for i := startOff; i <= limit-sz; i += sz {
+					oldVal := oldData[i : i+sz]
+					newVal := newData[i : i+sz]
+
+					var keep bool
+					if nzf.enabled {
+						if nzf.is32 {
+							v := binary.LittleEndian.Uint32(newVal)
+							keep = v&0x7FFFFFFF <= nzf.abits32
+						} else {
+							v := binary.LittleEndian.Uint64(newVal)
+							keep = v&0x7FFFFFFFFFFFFFFF <= nzf.abits64
+						}
+					} else {
+						keep = compareValues(params.DT, oldVal, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
+					}
+
+					if keep {
+						if arenaOff+sz > len(arena) { arena = make([]byte, arenaBlock*sz); arenaOff = 0 }
+						cp := arena[arenaOff : arenaOff+sz : arenaOff+sz]
+						copy(cp, newVal)
+						arenaOff += sz
+						local = append(local, ScanResult{Address: c.addr + uintptr(i), Value: cp})
+					}
+				}
+				if len(local) > 0 {
+					resultCh <- chunkResult{local}
+				}
+			}
+		}()
+	}
+	go func() { wg.Wait(); close(resultCh) }()
+
+	var all []ScanResult
+	for r := range resultCh {
+		all = append(all, r.results...)
+	}
+	ms.Results = all
+	Log.Info("nextScanFromSnapshot: %d results", len(all))
+	return len(all)
+}
+
 func (ms *MemoryScanner) NextScan(params ScanParams) int {
+	// If we have a snapshot from unknown first scan, use it for comparison
+	if ms.snapshot != nil {
+		return ms.nextScanFromSnapshot(params)
+	}
 	if len(ms.Results) == 0 {
 		Log.Warn("NextScan: called with 0 results")
 		return 0

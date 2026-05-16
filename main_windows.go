@@ -399,6 +399,7 @@ func cmdClose() {
 	}
 	currentHandle = 0
 	currentPID = 0
+	if scanner != nil { scanner.clearSnapshot() }
 	scanner = nil
 	pointerMap = nil
 	fmt.Println("Detached")
@@ -1242,6 +1243,7 @@ func cmdModules() {
 
 func cmdReset() {
 	if scanner != nil {
+		scanner.clearSnapshot()
 		scanner.Results = nil
 	}
 	fmt.Println("Scan results cleared")
