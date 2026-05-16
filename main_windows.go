@@ -122,7 +122,7 @@ func main() {
 			cmdShowAddressList()
 		case "freeze", "f":
 			Log.Info("CMD: freeze %v", args)
-			cmdFreeze(args)
+			cmdFreeze(args, reader)
 		case "ifreeze", "if":
 			Log.Info("CMD: ifreeze %v", args)
 			cmdIndexFreeze(args)
@@ -905,7 +905,9 @@ func cmdIndexFreeze(args []string) {
 		}
 		addr := func() uintptr { a, _ := scanner.getResult(idx-1); return a }()
 		if warn := checkWriteSafe(currentHandle, addr); warn != "" {
-			fmt.Printf("  [%d] WARNING: %s\n", idx, warn)
+			fmt.Printf("  [%d] SKIPPED — %s\n", idx, warn)
+			failed++
+			continue
 		}
 		id := freezer.Add(addr, val, fmt.Sprintf("scan[%d]", idx))
 		fmt.Printf("  [%d] 0x%X = %s (freeze #%d)\n", idx, addr, args[1], id)
@@ -988,7 +990,7 @@ func cmdRead(args []string) {
 	fmt.Printf("0x%X = %s (%s)\n", addr, val, dataTypeName(dt))
 }
 
-func cmdFreeze(args []string) {
+func cmdFreeze(args []string, reader *bufio.Reader) {
 	if currentHandle == 0 {
 		fmt.Println("Not attached")
 		return
@@ -1012,7 +1014,12 @@ func cmdFreeze(args []string) {
 		label = strings.Join(args[2:], " ")
 	}
 	if warn := checkWriteSafe(currentHandle, addr); warn != "" {
-		fmt.Printf("WARNING: %s\n", warn)
+		fmt.Printf("WARNING: %s\n  Freezing this address repeatedly may crash the game. Proceed? (yes/n): ", warn)
+		line, _ := reader.ReadString('\n')
+		if strings.ToLower(strings.TrimSpace(line)) != "yes" {
+			fmt.Println("Skipped.")
+			return
+		}
 	}
 	id := freezer.Add(addr, val, label)
 	fmt.Printf("Freezing 0x%X = %s (freeze #%d)\n", addr, args[1], id)
