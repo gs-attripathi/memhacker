@@ -312,7 +312,7 @@ func cmdPointerResultsVerify(args []string) {
 		expected := expectedVals[i]
 		status := "OK"
 		if expected != "" && currentVal != expected {
-			status = "MISMATCH"
+			status = "CHANGED"
 			mismatch++
 		} else {
 			ok++
@@ -322,7 +322,7 @@ func cmdPointerResultsVerify(args []string) {
 		matchedResults = append(matchedResults, r)
 	}
 
-	fmt.Printf("\nResult: %d OK, %d mismatch, %d wrong addr, %d broken\n", ok, mismatch, wrongAddr, broken)
+	fmt.Printf("\nResult: %d OK, %d changed, %d wrong addr, %d broken\n", ok, mismatch, wrongAddr, broken)
 
 	// If address filter was used, update in-memory to matched only
 	if hasExpected && len(matchedResults) > 0 {
@@ -331,12 +331,14 @@ func cmdPointerResultsVerify(args []string) {
 		fmt.Println("Tip: prsave <file.json>  <- save only working chains")
 	}
 	if mismatch > 0 {
-		fmt.Println("MISMATCH = chain valid but value changed (different save/character)")
+		fmt.Println("CHANGED = chain resolves correctly but value is different from when you saved.")
+		fmt.Println("          Did you start a new game or load a save? Value changes are normal.")
+		fmt.Println("          To confirm this is the right address: prwrite <idx> <test_val> and check in game.")
 	}
 	if broken > 0 {
 		fmt.Println("BROKEN = chain no longer resolves (game updated?)")
 	}
-	Log.Info("prverify: %d OK, %d mismatch, %d wrongAddr, %d broken", ok, mismatch, wrongAddr, broken)
+	Log.Info("prverify: %d OK, %d changed, %d wrongAddr, %d broken", ok, mismatch, wrongAddr, broken)
 }
 
 // prlabel <index> <label> — label a chain for easier identification
