@@ -3,6 +3,7 @@
 package main
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -53,6 +54,20 @@ func (f *Freezer) Remove(id int) {
 	} else {
 		Log.Warn("Unfreeze: id=%d not found", id)
 	}
+}
+
+// RemoveByPosition removes the entry at 1-based position in the sorted frozen list.
+func (f *Freezer) RemoveByPosition(pos int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := make([]int, 0, len(f.entries))
+	for id := range f.entries { ids = append(ids, id) }
+	sort.Ints(ids)
+	if pos < 1 || pos > len(ids) { return false }
+	id := ids[pos-1]
+	Log.Info("Unfreeze: pos=%d id=%d addr=0x%X", pos, id, f.entries[id].Address)
+	delete(f.entries, id)
+	return true
 }
 
 func (f *Freezer) RemoveByAddr(addr uintptr) bool {

@@ -113,6 +113,9 @@ func main() {
 		case "iwrite", "iw":
 			Log.Info("CMD: iwrite %v", args)
 			cmdIndexWrite(args)
+		case "iread", "ir":
+			Log.Info("CMD: iread %v", args)
+			cmdIndexRead(args)
 		case "add", "a":
 			cmdAddToList(args)
 		case "addrlist", "al":
@@ -626,9 +629,9 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("Found %d results in %v\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20)
+		showResults(20, "")
 	} else if count > 20 {
-		showResults(10)
+		showResults(10, "")
 	}
 }
 
@@ -655,56 +658,90 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("%d results remaining (%v)\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20)
+		showResults(20, "")
 	} else if count > 20 {
-		showResults(10)
+		showResults(10, "")
 	}
 }
 
 func cmdResults(args []string) {
-	if len(args) > 0 && (strings.Contains(args[0], "-") || strings.Contains(args[0], ",")) {
-		// Index-based: results 1-5 or results 1,3,5
-		if scanner == nil || scanner.totalResults() == 0 {
-			fmt.Println("No results")
-			return
+	if scanner == nil || scanner.totalResults() == 0 {
+		fmt.Println("No results")
+		return
+	}
+
+	// Parse args: optional count/range, optional sort keyword
+	sortBy := "" // "addr" or "val"
+	filtered := args[:0:len(args)]
+	for _, a := range args {
+		switch strings.ToLower(a) {
+		case "addr", "address":
+			sortBy = "addr"
+		case "val", "value":
+			sortBy = "val"
+		default:
+			filtered = append(filtered, a)
 		}
+	}
+	args = filtered
+
+	// Index range: results 1-5 or results 1,3,5
+	if len(args) > 0 && (strings.Contains(args[0], "-") || strings.Contains(args[0], ",")) {
 		indices := parseIndexSpec(args[0])
-		fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
-		fmt.Println(strings.Repeat("-", 45))
+		type row struct{ idx int; addr uintptr; val string }
+		var rows []row
 		for _, idx := range indices {
-			if idx < 1 || idx > scanner.totalResults() {
-				fmt.Printf("%-5d  out of range\n", idx)
-				continue
-			}
+			if idx < 1 || idx > scanner.totalResults() { continue }
 			addr, _ := scanner.getResult(idx - 1)
 			val, err := scanner.ReadCurrentValue(addr, currentDT)
 			if err != nil { val = "?" }
-			fmt.Printf("%-5d  0x%-18X  %s\n", idx, addr, val)
+			rows = append(rows, row{idx, addr, val})
+		}
+		if sortBy == "val" {
+			sort.Slice(rows, func(i, j int) bool { return rows[i].val < rows[j].val })
+		} else if sortBy == "addr" {
+			sort.Slice(rows, func(i, j int) bool { return rows[i].addr < rows[j].addr })
+		}
+		fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
+		fmt.Println(strings.Repeat("-", 45))
+		for _, r := range rows {
+			fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
 		}
 		return
 	}
+
 	n := 20
-	if len(args) > 0 {
-		n, _ = strconv.Atoi(args[0])
-	}
-	showResults(n)
+	if len(args) > 0 { n, _ = strconv.Atoi(args[0]) }
+	showResults(n, sortBy)
 }
 
 
-func showResults(n int) {
+func showResults(n int, sortBy string) {
 	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No results")
 		return
 	}
 	total := scanner.totalResults()
 	if n > total { n = total }
-	fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
-	fmt.Println(strings.Repeat("-", 45))
+
+	type row struct{ idx int; addr uintptr; val string }
+	rows := make([]row, n)
 	for i := 0; i < n; i++ {
 		addr, _ := scanner.getResult(i)
 		val, err := scanner.ReadCurrentValue(addr, currentDT)
 		if err != nil { val = "?" }
-		fmt.Printf("%-5d  0x%-18X  %s\n", i+1, addr, val)
+		rows[i] = row{i + 1, addr, val}
+	}
+	if sortBy == "val" {
+		sort.Slice(rows, func(i, j int) bool { return rows[i].val < rows[j].val })
+	} else if sortBy == "addr" {
+		sort.Slice(rows, func(i, j int) bool { return rows[i].addr < rows[j].addr })
+	}
+
+	fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
+	fmt.Println(strings.Repeat("-", 45))
+	for _, r := range rows {
+		fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
 	}
 	if total > n {
 		fmt.Printf("... and %d more (use 'results <N>' to show more)\n", total-n)
@@ -741,6 +778,36 @@ func cmdWrite(args []string) {
 // e.g: iwrite 5 100       -> write to result #5
 //      iwrite 5-7 100     -> write to results #5, #6, #7
 //      iwrite 1,3,5 100   -> write to results #1, #3, #5
+// iread <base_addr> <index> — reads at base_addr + index * sizeof(currentDT)
+// e.g: iread 0x1A2B3C4D 4  with f32 reads at 0x1A2B3C4D + 4*4 = 0x1A2B3C4D + 16
+func cmdIndexRead(args []string) {
+	if currentHandle == 0 {
+		fmt.Println("Not attached")
+		return
+	}
+	if len(args) < 2 {
+		fmt.Println("Usage: iread <base_addr> <index>")
+		fmt.Println("  Reads at base_addr + index * sizeof(type)")
+		fmt.Println("  e.g: iread 0x1A2B3C4D 4   <- reads 4th element in array")
+		return
+	}
+	base, err := resolveAddr(args[0])
+	if err != nil {
+		fmt.Println("Invalid address:", err)
+		return
+	}
+	var idx int
+	fmt.Sscanf(args[1], "%d", &idx)
+	sz := dataTypeSize(currentDT)
+	addr := base + uintptr(idx)*uintptr(sz)
+	val, err := scanner.ReadCurrentValue(addr, currentDT)
+	if err != nil {
+		fmt.Println("Read failed:", err)
+		return
+	}
+	fmt.Printf("0x%X [%d] = %s  (base=0x%X + %d * %d bytes)\n", addr, idx, val, base, idx, sz)
+}
+
 func cmdIndexWrite(args []string) {
 	if currentHandle == 0 {
 		fmt.Println("Not attached")
@@ -966,11 +1033,14 @@ func cmdUnfreeze(args []string) {
 			return
 		}
 	}
-	// Otherwise treat as ID / range / list
+	// Otherwise treat as position / range / list (1-based position in frozen list)
 	indices := parseIndexSpec(arg)
-	for _, id := range indices {
-		freezer.Remove(id)
-		fmt.Printf("Unfroze id=%d\n", id)
+	for _, pos := range indices {
+		if freezer.RemoveByPosition(pos) {
+			fmt.Printf("Unfroze position %d\n", pos)
+		} else {
+			fmt.Printf("Position %d not found in frozen list\n", pos)
+		}
 	}
 }
 
@@ -984,17 +1054,17 @@ func cmdFrozenList() {
 		fmt.Println("No frozen entries")
 		return
 	}
-	fmt.Printf("%-5s  %-22s  %-8s  %-12s  %s\n", "ID", "Address", "Active", "Value", "Label")
+	fmt.Printf("%-5s  %-22s  %-8s  %-12s  %s\n", "#", "Address", "Active", "Value", "Label")
 	fmt.Println(strings.Repeat("-", 75))
-	for _, e := range list {
+	for i, e := range list {
 		active := "YES"
 		if !e.Entry.Active { active = "NO" }
 		fmt.Printf("%-5d  0x%-20X  %-8s  %-12s  %s\n",
-			e.ID, e.Entry.Address, active,
+			i+1, e.Entry.Address, active,
 			decodeValue(currentDT, e.Entry.Value),
 			e.Entry.Label)
 	}
-	fmt.Println("\nTip: unfreeze 0xADDR  or  unfreeze <id>")
+	fmt.Println("\nTip: unfreeze 1   unfreeze 1-3   unfreeze 0xADDR")
 }
 
 func cmdBuildPointerMap() {
