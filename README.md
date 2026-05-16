@@ -1,4 +1,4 @@
-# MemHacker v1.8.0
+# MemHacker v2.1.0
 
 A Cheat Engine alternative written in Go — memory scanner, CE-style multi-session pointer scan, value freeze.
 
@@ -8,7 +8,7 @@ A Cheat Engine alternative written in Go — memory scanner, CE-style multi-sess
 
 ## Download
 
-Get the latest `memhacker.exe` from the repo or [Releases](https://github.com/gs-attripathi/memhacker/releases/latest).
+Get the latest `memhacker.exe` from [Releases](https://github.com/gs-attripathi/memhacker/releases/latest).
 
 Run as **Administrator** (required to read/write other process memory).
 
@@ -21,218 +21,250 @@ Requirements: [Go 1.21+](https://go.dev/dl/)
 ```
 git clone https://github.com/gs-attripathi/memhacker.git
 cd memhacker
-go mod tidy
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o memhacker.exe .
 ```
 
-Cross-compile from macOS/Linux works fine — produces a single Windows `.exe`.
+Cross-compile from macOS/Linux works fine.
 
 ---
 
 ## Commands
 
 ### Process
-| Command | Args | Description |
-|---------|------|-------------|
-| `ps` / `list` | — | List all running processes |
-| `open <target>` | `pid` or `name` | Attach to process. Auto-detects 32-bit WOW64 vs 64-bit |
-| `close` | — | Detach from current process |
-| `modules` | — | List loaded DLLs — shows `GAME` (in game dir) / `SYSTEM` / `OTHER` tag + full path |
 
-### Data Type
-| Command | Args | Description |
-|---------|------|-------------|
-| `type <dt>` | `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` `str` `bytes` | Set scan data type. Default: `i32` |
-
-### Scanning
-| Command | Args | Description |
-|---------|------|-------------|
-| `scan exact <val>` | value | First scan — exact match |
-| `scan unknown` | — | First scan — unknown initial value |
-| `scan bigger <val>` | value | Greater than |
-| `scan smaller <val>` | value | Less than |
-| `scan between <v1> <v2>` | two values | In range |
-| `scan changed` | — | Changed since last scan |
-| `scan unchanged` | — | Unchanged since last scan |
-| `scan increased` | — | Any increase |
-| `scan decreased` | — | Any decrease |
-| `scan incby <val>` | value | Increased by exactly this amount |
-| `scan decby <val>` | value | Decreased by exactly this amount |
-| `scan notequal <val>` | value | Not equal to value |
-| `next <type> [val]` | same as scan | Filter existing results |
-| `results [N]` | optional count | Show top N results (default 20) |
-| `reset` | — | Clear scan results |
-
-### Address Aliases
-Set a name for any address and use it in every command that takes an address.
-
-| Command | Args | Description |
-|---------|------|-------------|
-| `alias <name> <addr>` | name, hex addr | Set alias. e.g. `alias hp 0x614DD58` |
-| `alias <name>` | name | Show single alias value |
-| `alias` | — | List all aliases |
-| `unalias <name>` | name | Remove alias |
-
-Once set, use alias name anywhere an address is expected:
-```
-alias hp 0x614DD58
-write hp 999
-freeze hp 999 MyHP
-pmsave s1.pmap hp
-read hp
-prverify hp
-```
-
-### Value Operations
-| Command | Args | Description |
-|---------|------|-------------|
-| `read <addr> [type]` | addr (alias ok), optional type | Read live value. Type defaults to current scan type |
-| `write <addr> <val>` | addr (alias ok), value | Write value to address |
-| `add <addr> [label]` | addr (alias ok), optional label | Add to address list |
-| `addrlist` | — | Show address list with live values |
-
-### Freeze
-| Command | Args | Description |
-|---------|------|-------------|
-| `freeze <addr> <val> [label]` | addr (alias ok), value, optional label | Freeze address at 50ms interval |
-| `unfreeze <id>` | freeze ID | Unfreeze by ID |
-| `frozen` | — | List all frozen entries |
+| Command | Description |
+|---------|-------------|
+| `ps` / `list` | List all running processes |
+| `open <pid\|name>` | Attach to process. Supports partial name match — `open surro` matches `SurrounDead.exe`. Auto-detects 32-bit WOW64 vs 64-bit |
+| `close` | Detach |
+| `modules` | List loaded DLLs — shows `GAME` / `SYSTEM` / `OTHER` tag |
+| `regions [all]` | List scannable memory regions with base/end/size. Default: writable private only. `regions all` shows everything |
 
 ---
 
-### Pointer Scanning (CE-style multi-session)
+### Data Type
 
-**How it works:** scan the same value across multiple game restarts. Each run has a different address for the same data. Only pointer chains that resolve correctly in ALL sessions are returned — these are real static pointers that survive restarts.
+| Command | Description |
+|---------|-------------|
+| `type <dt>` | Set scan data type. Default: `f32` |
 
-#### Session management
-| Command | Args | Description |
-|---------|------|-------------|
-| `pmsave <file> <addr>` | filename, addr (alias ok) | Build pointer map + save to file + register session. Addr is embedded in the file |
-| `pmload <file>` | filename | Load a saved pmap and register as session. No need to re-specify address |
-| `pmsessions` | — | List all registered sessions |
-| `pmclear` | — | Clear all sessions and pointer map |
+Types: `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` `str` `bytes`
 
-#### Running the scan
+---
+
+### Scanning
+
+Scans **writable private memory only** by default (game values are always here). Append `all` to scan everything including textures/assets (slower).
+
+| Command | Description |
+|---------|-------------|
+| `scan exact <val>` | Exact match. For f32/f64 uses ±1.0 tolerance automatically |
+| `scan unknown` | Snapshot all memory to disk — use `next changed/increased/decreased` to filter |
+| `scan bigger <val>` | Greater than |
+| `scan smaller <val>` | Less than |
+| `scan between <v1> <v2>` | In range |
+| `scan changed` | Changed since last scan |
+| `scan unchanged` | Unchanged since last scan |
+| `scan increased` | Any increase |
+| `scan decreased` | Any decrease |
+| `scan incby <val>` | Increased by exactly this amount |
+| `scan decby <val>` | Decreased by exactly this amount |
+| `scan notequal <val>` | Not equal to value |
+| `next <type> [val]` | Filter existing results (same types as scan) |
+| `results [N]` | Show top N results with live values (default 20) |
+| `reset` | Clear scan results |
+
+**Optional scan keywords** (append to any scan command):
 ```
-pscan [depth] [offset] [max] [filter]
+scan exact 100 all                       <- scan all memory including read-only
+scan exact 100 range 0x1000000 0x2000000 <- scan only within address range
+scan exact 0 cap 500000                  <- stop after 500K results
+```
+
+**Notes:**
+- `scan unknown` writes a memory snapshot to `memhacker_scans\snapshot.snap` on disk — no RAM pressure regardless of game size
+- Results > 1M are automatically stored to `memhacker_scans\scan_N.addr` + `.vals` — no RAM pressure
+- If existing results are present, `scan` asks for confirmation before clearing them
+- Press **Ctrl+C** during any scan to cancel and clear results for a fresh start
+- Progress is shown every 2 seconds for both `scan` and `next`
+
+---
+
+### Value Operations
+
+| Command | Description |
+|---------|-------------|
+| `read <addr> [type]` | Read live value at address |
+| `write <addr> <val>` | Write value to address |
+| `iwrite <idx> <val>` | Write to scan result by index. Supports range/list: `iwrite 5 100` `iwrite 5-7 100` `iwrite 1,3,5 100` |
+| `add <addr> [label]` | Add address to address list |
+| `addrlist` | Show address list with live values |
+
+---
+
+### Freeze
+
+| Command | Description |
+|---------|-------------|
+| `freeze <addr> <val> [label]` | Freeze address at value (50ms write loop) |
+| `ifreeze <idx> <val>` | Freeze scan result by index. Supports range/list: `ifreeze 5 100` `ifreeze 5-7 100` |
+| `unfreeze <id\|range\|list>` | Unfreeze by ID. e.g. `unfreeze 3` `unfreeze 1-5` `unfreeze 1,3,5` |
+| `frozen` | List all frozen entries |
+
+---
+
+### Address Aliases
+
+Set a name for any address and use it in every command.
+
+| Command | Description |
+|---------|-------------|
+| `alias <name> <addr>` | Set alias. e.g. `alias hp 0x614DD58` |
+| `alias` | List all aliases |
+| `unalias <name>` | Remove alias |
+
+---
+
+### Pointer Scanning
+
+CE-style multi-session pointer scan. Find stable pointer chains that survive game restarts.
+
+**How it works:** attach and save a pointer map snapshot each session. `pscan` cross-references all sessions — only chains resolving correctly in ALL sessions are returned.
+
+#### Sessions
+
+| Command | Description |
+|---------|-------------|
+| `pmsave <file> <addr>` | Build pointer map + save + register session |
+| `pmadd <addr>` | Add another address to the last session (CE-style: one pmap, multiple targets) |
+| `pmload <file> [file2] ...` | Load one or more saved pmaps. Multiple files at once: `pmload s1.pmap s2.pmap s3.pmap` |
+| `pmsessions` | List registered sessions |
+| `pmclear` | Clear all sessions |
+
+#### Running pscan
+
+```
+pscan [depth] [offset] [max] [filter] [maxOffsets]
 ```
 
 | Arg | Default | Description |
 |-----|---------|-------------|
-| `depth` | `7` | Max BFS depth. Increase if no results (try 9) |
-| `offset` | `5000` | Max offset at each pointer hop |
-| `max` | `100` | Max results to return |
-| `filter` | `exe` | Where to anchor chains (see below) |
+| `depth` | `5` | DFS depth. depth=5 ~1s, depth=6 ~27s, depth=7 = minutes |
+| `offset` | `8192` | Max offset per pointer hop |
+| `max` | `100` | Max chains to return |
+| `filter` | `exe` | `exe` = main exe only, `game` = all game DLLs, `all` = everything |
+| `maxOffsets` | `5` | Max offset groups per node (CE default) |
 
-**Filters:**
-| Filter | Description |
-|--------|-------------|
-| `exe` | Main executable only — most reliable, use this first |
-| `game` | Any module (EXE + DLLs) inside the game's root directory. Root is auto-detected from the main exe's folder at attach time — no hardcoded list, works with any game, any install path, shortcuts included. Superset of `exe` |
-| `all` | All modules including GPU drivers, runtime DLLs — use as last resort |
+**Multiple sessions run in parallel** — total time = slowest session, not sum.
 
-**Note:** `game` filter requires pmaps built with v1.8.1+ (pmap v3 format). Older pmaps will fall back to name-based detection.
-
-**If `exe` returns 0 results**, the tool suggests:
-```
-pscan 9 5000 100          <- try more depth first
-pscan 7 5000 100 game     <- then try game DLLs
-pscan 7 5000 100 all      <- last resort
-```
+After pscan, results are **automatically saved** to `pscan_last_N.json` (never overwrites). Only chains that currently resolve in the live process are shown.
 
 ---
 
-### Pointer Results (save/load/verify across restarts)
+### Pointer Results
 
-After pscan, save chains to a JSON file. Load and verify them every session. Over time the file gets cleaner as broken chains get filtered out.
-
-| Command | Args | Description |
-|---------|------|-------------|
-| `prsave <file.json>` | filename | Save current in-memory chains to JSON. Also records current value at each chain address |
-| `prload <file.json> [addr]` | filename, optional addr (alias ok) | Load chains from file. If addr given, only chains resolving to that address are kept in memory |
-| `prverify [addr]` | optional addr (alias ok) | Verify in-memory chains against current process. If addr given, filters to only chains resolving to it |
-| `prlist` | — | List current in-memory chains with index numbers |
-| `prwrite <index> <val>` | 1-based index, value | Follow chain by index, write value once |
-| `prfreeze <index> <val>` | 1-based index, value | Follow chain by index, freeze value |
-
-**prverify output:**
-| Status | Meaning |
-|--------|---------|
-| `OK` | Chain resolves correctly, value matches what was saved |
-| `MISMATCH` | Chain resolves but value changed (different save slot / character) |
-| `WRONG ADDR` | Chain resolves but to a different address than expected |
-| `BROKEN` | Chain doesn't resolve at all (game updated? wrong version?) |
+| Command | Description |
+|---------|-------------|
+| `prsave <file.json>` | Save current chains to JSON |
+| `prload <file.json> [addr]` | Load chains. If addr given, keeps only chains resolving to that address |
+| `prverify [addr]` | Re-verify chains against current process |
+| `prlist [ok\|addr]` | List chains. `prlist ok` = only resolvable. `prlist 0xADDR` = only those resolving to addr |
+| `prlabel <index> <label>` | Label a chain (saved with prsave) |
+| `prwrite <index> <val>` | Follow chain, write value once |
+| `prfreeze <index> <val>` | Follow chain, freeze value |
 
 ---
 
 ### Logging
-| Command | Args | Description |
-|---------|------|-------------|
-| `log` | — | Show current log file path |
-| `loglast [N]` | optional line count | Copy full log (or last N lines) to Windows clipboard. Includes version header — paste directly into GitHub issues |
+
+| Command | Description |
+|---------|-------------|
+| `log` | Show log file path |
+| `loglast [N]` | Copy log (or last N lines) to Windows clipboard — paste into GitHub issues |
 
 ---
 
-## Full Workflow
+## Temp Files
 
-### Step 1 — Find the pointer chain (do once per game)
+All scan temp files go into `memhacker_scans\` folder next to the exe:
+
+```
+memhacker_scans\
+  snapshot.snap      <- unknown scan snapshot (deleted after first next)
+  scan_1.addr        <- addresses from last scan
+  scan_1.vals        <- values from last scan
+  scan_2.addr        <- addresses after first next
+  scan_2.vals
+  ...
+```
+
+Safe to delete the whole `memhacker_scans\` folder manually at any time.
+
+---
+
+## Workflow
+
+### Find a value (standard scan)
 
 ```
 open game.exe
-type i32
-scan exact 100           <- find HP value
-next exact 85            <- take damage, scan new value
-                         <- repeat until 1-2 results remain
-alias hp 0x614DD58       <- name the address
-pmsave s1.pmap hp        <- save snapshot 1
+scan exact 100        <- find HP (default type is f32)
+next decreased        <- take damage in game, filter
+next decreased        <- take more damage
+results               <- narrow down to 1-2 addresses
+write 0xADDR 999      <- or use iwrite 1 999
+```
+
+### Unknown scan (when you don't know the value)
+
+```
+open game.exe
+scan unknown          <- snapshots all memory to disk
+                      <- do something in game (take damage, gain gold, etc.)
+next changed          <- filter to addresses that changed
+next changed          <- filter again
+results
+```
+
+### Find a stable pointer chain (do once per game)
+
+```
+open game.exe
+scan exact 100
+next exact 85
+alias hp 0x614DD58
+pmsave s1.pmap hp         <- session 1
 
 restart game
 scan exact 100
 next exact 85
-alias hp 0x72419D0       <- new address this run
-pmsave s2.pmap hp        <- snapshot 2
+alias hp 0x72419D0
+pmsave s2.pmap hp         <- session 2
 
-restart game again
-scan exact 100
-next exact 85
-alias hp 0x710E770
-pmsave s3.pmap hp        <- snapshot 3
+restart game
+pmsave s3.pmap 0xNEWADDR  <- session 3
 
-pscan                    <- cross-reference all 3, returns chains valid in all sessions
-prsave hp_chains.json    <- save found chains to file
+pscan                     <- cross-reference all sessions
+prsave hp_chains.json
 ```
 
-### Step 2 — Use every session (no pscan needed again)
+### Use the pointer chain every session
 
 ```
 open game.exe
-scan exact 100
-next exact 85            <- find current HP address
-alias hp 0x8C3D4E0
-
-prload hp_chains.json hp <- load chains, keep only ones resolving to 0x8C3D4E0
-                         <- in-memory updated to matched chains only
-prsave hp_chains.json    <- overwrite — file gets cleaner each session
-
-prwrite 1 999            <- set HP via chain 1
-prfreeze 1 999           <- or freeze it permanently
-```
-
-Or use `prverify` after loading:
-```
-prload hp_chains.json    <- load all chains
-prverify hp              <- verify + filter to matched only
-prsave hp_chains.json    <- save clean version
+prload hp_chains.json     <- load + auto-verify
+prwrite 1 999             <- write via chain
+prfreeze 1 999            <- or freeze
 ```
 
 ---
 
 ## Notes
 
-- Needs Administrator / elevated privileges
+- Requires Administrator privileges
 - Supports 32-bit (WOW64) and 64-bit processes — auto-detected on attach
-- `game` filter uses actual game directory from exe path at attach time — works regardless of install location, works with shortcuts. Known limitation: if exe is nested inside game root (e.g. `game/bin/game.exe`) then only `bin/` is considered root, DLLs outside `bin/` won't be detected as game modules. Use `exe` filter in that case
-- System DLLs (kernel32, ntdll etc) always skipped as pointer base
-- Log file: `memhacker.log` in same folder as the exe
-- pmap files are binary — large for 32-bit games (~500MB), keep them safe
-- Pointer result `.json` files are small and human-readable
+- Default scan type: `f32` (most games store floats for HP, speed etc.)
+- Float `scan exact` uses ±1.0 tolerance automatically — catches imprecise game values
+- Scan defaults to writable private memory — append `all` for full scan (much slower)
+- Log file: `memhacker.log` next to the exe
+- Verified working: SurrounDead (UE5 64-bit), Mount & Blade Warband (32-bit WOW64)
