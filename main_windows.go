@@ -189,7 +189,7 @@ PROCESS
 
 SCANNING
   type <dt>              - set data type (i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 str bytes)
-  scan <type> [value]    - first scan
+  scan <type> [value] [all] - first scan (default: writable memory only; add 'all' for full scan)
     types: exact <v>  unknown  bigger <v>  smaller <v>  between <v1> <v2>
            changed  unchanged  increased  decreased  incby <v>  decby <v>  notequal <v>
   next <type> [value]    - filter scan (same types as scan)
@@ -529,13 +529,32 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	}
 	if len(args) == 0 {
 		fmt.Println("Usage: scan <type> [value]  (e.g.: scan exact 100  or  scan unknown)")
+		fmt.Println("       append 'all' to scan all memory: scan exact 100 all")
 		return
 	}
+
+	// Strip optional "all" keyword — scans all readable memory instead of writable-only
+	scanAll := false
+	filtered := args[:0:len(args)]
+	for _, a := range args {
+		if strings.ToLower(a) == "all" {
+			scanAll = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	args = filtered
+
 	p, ok := parseScanArgs(args[0], args[1:])
 	if !ok {
 		return
 	}
-	fmt.Printf("Scanning for %s [type=%s]...\n", args[0], dataTypeName(currentDT))
+	// Default: writable memory only — game values are always writable.
+	// Full scan (textures, mapped files) is 10-30x more data and rarely needed.
+	p.Writable = !scanAll
+	scope := "writable"
+	if scanAll { scope = "all" }
+	fmt.Printf("Scanning for %s [type=%s scope=%s]...\n", args[0], dataTypeName(currentDT), scope)
 	start := time.Now()
 	count := scanner.FirstScan(p)
 	elapsed := time.Since(start)
