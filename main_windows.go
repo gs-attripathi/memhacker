@@ -626,7 +626,7 @@ func cmdNext(args []string, reader *bufio.Reader) {
 		fmt.Println("Not attached")
 		return
 	}
-	if scanner == nil || len(scanner.Results) == 0 {
+	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No previous scan. Run 'scan' first")
 		return
 	}
@@ -721,7 +721,7 @@ func cmdIndexWrite(args []string) {
 		fmt.Println("       iwrite 1,3,5 100   <- write to results #1, #3, #5")
 		return
 	}
-	if scanner == nil || len(scanner.Results) == 0 {
+	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No scan results. Run scan first.")
 		return
 	}
@@ -736,7 +736,7 @@ func cmdIndexWrite(args []string) {
 
 	ok, failed := 0, 0
 	for _, idx := range indices {
-		if idx < 1 || idx > len(scanner.Results) {
+		if idx < 1 || idx > scanner.totalResults() {
 			fmt.Printf("  [%d] out of range (total %d)\n", idx, len(scanner.Results))
 			failed++
 			continue
@@ -788,7 +788,7 @@ func cmdIndexFreeze(args []string) {
 		fmt.Println("       ifreeze 1,3,5 100   <- freeze results #1, #3, #5")
 		return
 	}
-	if scanner == nil || len(scanner.Results) == 0 {
+	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No scan results. Run scan first.")
 		return
 	}
@@ -800,7 +800,7 @@ func cmdIndexFreeze(args []string) {
 	indices := parseIndexSpec(args[0])
 	ok, failed := 0, 0
 	for _, idx := range indices {
-		if idx < 1 || idx > len(scanner.Results) {
+		if idx < 1 || idx > scanner.totalResults() {
 			fmt.Printf("  [%d] out of range (total %d)\n", idx, len(scanner.Results))
 			failed++
 			continue
@@ -823,7 +823,7 @@ func cmdAddToList(args []string) {
 		for _, r := range scanner.Results {
 			addressList = append(addressList, addressEntry{Addr: r.Address, DT: currentDT})
 		}
-		fmt.Printf("Added %d addresses to list\n", len(scanner.Results))
+		fmt.Printf("Added %d addresses to list\n", scanner.totalResults())
 		return
 	}
 	addr, err := resolveAddr(args[0])
