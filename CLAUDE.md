@@ -261,16 +261,17 @@ Current: **v2.1.0** (AppVersion in `logger.go`)
 
 ---
 
-## README Rules
+## Documentation Rules
 
-**Always keep README.md in sync with the code.** Update it whenever:
-- A new command is added or an existing one changes behaviour
-- A command or feature is removed or renamed — remove it from README too
+**Keep both `README.md` and the in-app `help` command (`printHelp()` in `main_windows.go`) in sync with the code.** Update both whenever:
+- A new command is added or an existing one changes behaviour or arguments
+- A command or feature is removed or renamed — remove from both README and help
 - Default values change (scan type, depth, offset, etc.)
 - A new temp file or folder is introduced
 - A workflow changes
+- New keywords/flags are added to existing commands (e.g. `range`, `cap`, `all` on scan)
 
-The README is the user-facing contract. If a feature is trashed or rolled back, remove it from README in the same commit.
+The README is the user-facing contract. The help command is the in-tool reference. If a feature is trashed or rolled back, remove it from both in the same commit.
 
 ---
 
