@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -268,82 +270,111 @@ func NewMemoryScanner(handle windows.Handle) *MemoryScanner {
 	return &MemoryScanner{handle: handle}
 }
 
+const maxScanResults = 10_000_000 // hard cap — scanning for 0 on large games can hit 100M+
+
 func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	Log.Info("FirstScan: type=%s scan=%d writable=%v", dataTypeName(params.DT), params.ST, params.Writable)
 	regions := EnumMemoryRegions(ms.handle, params.Writable)
-	Log.Debug("FirstScan: scanning %d memory regions", len(regions))
+	total := len(regions)
+	Log.Debug("FirstScan: scanning %d memory regions", total)
+	fmt.Printf("  scanning %d regions...\n", total)
 	numCPU := runtime.NumCPU()
 
-	jobs := make(chan MEMORY_BASIC_INFORMATION, len(regions))
+	jobs := make(chan MEMORY_BASIC_INFORMATION, total)
 	for _, r := range regions {
 		jobs <- r
 	}
 	close(jobs)
 
+	var doneCount int64 // atomic regions processed
+	var stopped  int32  // atomic stop flag for result cap
+
 	resultChan := make(chan []ScanResult, numCPU*4)
 	var wg sync.WaitGroup
+
+	isFloat := params.DT == TypeFloat32 || params.DT == TypeFloat64
 
 	for i := 0; i < numCPU; i++ {
 		wg.Add(1)
 		go func() {
-				defer wg.Done()
-				for r := range jobs {
-					data, err := ReadMemory(ms.handle, r.BaseAddress, int(r.RegionSize))
-					if err != nil || len(data) == 0 {
-						continue
-					}
-					sz := dataTypeSize(params.DT)
-					if params.DT == TypeString || params.DT == TypeBytes {
-						sz = len(params.Value)
-					}
-					if sz == 0 {
-						continue
-					}
+			defer wg.Done()
+			for r := range jobs {
+				if atomic.LoadInt32(&stopped) != 0 {
+					atomic.AddInt64(&doneCount, 1)
+					continue
+				}
+				data, err := ReadMemory(ms.handle, r.BaseAddress, int(r.RegionSize))
+				atomic.AddInt64(&doneCount, 1)
+				if err != nil || len(data) == 0 {
+					continue
+				}
+				sz := dataTypeSize(params.DT)
+				if params.DT == TypeString || params.DT == TypeBytes {
+					sz = len(params.Value)
+				}
+				if sz == 0 {
+					continue
+				}
 
-					var local []ScanResult
+				var local []ScanResult
 
-					// Fast path: exact scan uses bytes.Index (SIMD-accelerated in Go runtime)
-					if params.ST == ScanExact && len(params.Value) == sz {
-						needle := params.Value[:sz]
-						searchIn := data
-						offset := 0
-						for {
-							idx := bytes.Index(searchIn, needle)
-							if idx < 0 {
-								break
-							}
+				// Fast path: exact scan with bytes.Index — skip for floats since they need tolerance
+				if params.ST == ScanExact && !isFloat && len(params.Value) == sz {
+					needle := params.Value[:sz]
+					searchIn := data
+					offset := 0
+					for {
+						idx := bytes.Index(searchIn, needle)
+						if idx < 0 {
+							break
+						}
+						cp := make([]byte, sz)
+						copy(cp, needle)
+						local = append(local, ScanResult{
+							Address: r.BaseAddress + uintptr(offset+idx),
+							Value:   cp,
+						})
+						advance := idx + 1
+						offset += advance
+						searchIn = searchIn[advance:]
+					}
+				} else {
+					local = make([]ScanResult, 0, 64)
+					for i := 0; i <= len(data)-sz; i++ {
+						chunk := data[i : i+sz]
+						if compareValues(params.DT, nil, chunk, params.Value, params.Value2, params.ST, params.Tolerance) {
 							cp := make([]byte, sz)
-							copy(cp, needle)
+							copy(cp, chunk)
 							local = append(local, ScanResult{
-								Address: r.BaseAddress + uintptr(offset+idx),
+								Address: r.BaseAddress + uintptr(i),
 								Value:   cp,
 							})
-							advance := idx + 1
-							offset += advance
-							searchIn = searchIn[advance:]
 						}
-					} else {
-						// General path for all other scan types
-						local = make([]ScanResult, 0, 64)
-						for i := 0; i <= len(data)-sz; i++ {
-							chunk := data[i : i+sz]
-							if compareValues(params.DT, nil, chunk, params.Value, params.Value2, params.ST, params.Tolerance) {
-								cp := make([]byte, sz)
-								copy(cp, chunk)
-								local = append(local, ScanResult{
-									Address: r.BaseAddress + uintptr(i),
-									Value:   cp,
-								})
-							}
-						}
-					}
-
-					if len(local) > 0 {
-						resultChan <- local
 					}
 				}
-			}()
+
+				if len(local) > 0 && atomic.LoadInt32(&stopped) == 0 {
+					resultChan <- local
+				}
+			}
+		}()
 	}
+
+	// Progress ticker
+	doneCh := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-doneCh:
+				return
+			case <-tick.C:
+				d := atomic.LoadInt64(&doneCount)
+				fmt.Printf("  ... %d/%d regions scanned\n", d, total)
+			}
+		}
+	}()
 
 	go func() {
 		wg.Wait()
@@ -351,8 +382,19 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	}()
 
 	var all []ScanResult
+	hitCap := false
 	for batch := range resultChan {
 		all = append(all, batch...)
+		if len(all) >= maxScanResults && !hitCap {
+			hitCap = true
+			atomic.StoreInt32(&stopped, 1)
+			fmt.Printf("  WARNING: hit %d result cap — too many matches, narrow your scan\n", maxScanResults)
+		}
+	}
+	close(doneCh)
+
+	if hitCap {
+		all = all[:maxScanResults]
 	}
 	ms.Results = all
 	Log.Info("FirstScan: done, found %d results", len(all))
