@@ -378,7 +378,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 				return
 			case <-tick.C:
 				d := atomic.LoadInt64(&doneCount)
-				fmt.Printf("  ... %d/%d regions | %d results\n", d, total, len(ms.Results))
+				fmt.Printf("\r  ... %d/%d regions | %d results   ", d, total, len(ms.Results))
 			}
 		}
 	}()
@@ -394,6 +394,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	}
 	close(doneCh)
 
+	fmt.Println() // end the \r progress line
 	ms.Results = all
 	Log.Info("FirstScan: done, found %d results", len(all))
 	return len(all)
