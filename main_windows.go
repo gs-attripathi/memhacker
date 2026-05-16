@@ -24,7 +24,7 @@ var (
 	currentIs32Bit bool // true if attached process is 32-bit (WOW64)
 	scanner        *MemoryScanner
 	freezer        *Freezer
-	currentDT      DataType = TypeInt32
+	currentDT      DataType = TypeFloat32
 	pointerMap     *PointerMap
 	addressList    []addressEntry
 
