@@ -160,6 +160,11 @@ func ReadMemory(handle windows.Handle, addr uintptr, size int) ([]byte, error) {
 	var read uintptr
 	err := windows.ReadProcessMemory(handle, addr, &buf[0], uintptr(size), &read)
 	if err != nil {
+		if read > 0 {
+			// Partial read — some pages accessible, some not. Return what we got.
+			Log.Debug("ReadMemory: addr=0x%X partial read %d/%d bytes", addr, read, size)
+			return buf[:read], nil
+		}
 		Log.Debug("ReadMemory: addr=0x%X size=%d failed: %v", addr, size, err)
 		return nil, err
 	}
