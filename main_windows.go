@@ -760,6 +760,9 @@ func cmdWrite(args []string) {
 		fmt.Println("Invalid value:", err)
 		return
 	}
+	if warn := checkWriteSafe(currentHandle, addr); warn != "" {
+		fmt.Printf("WARNING: %s\n", warn)
+	}
 	if err := WriteMemory(currentHandle, addr, val); err != nil {
 		fmt.Println("Write failed:", err)
 		return
@@ -834,6 +837,9 @@ func cmdIndexWrite(args []string) {
 			continue
 		}
 		addr := func() uintptr { a, _ := scanner.getResult(idx-1); return a }()
+		if warn := checkWriteSafe(currentHandle, addr); warn != "" {
+			fmt.Printf("  [%d] WARNING: %s\n", idx, warn)
+		}
 		if err := WriteMemory(currentHandle, addr, val); err != nil {
 			fmt.Printf("  [%d] 0x%X failed: %v\n", idx, addr, err)
 			failed++
@@ -898,8 +904,11 @@ func cmdIndexFreeze(args []string) {
 			continue
 		}
 		addr := func() uintptr { a, _ := scanner.getResult(idx-1); return a }()
+		if warn := checkWriteSafe(currentHandle, addr); warn != "" {
+			fmt.Printf("  [%d] WARNING: %s\n", idx, warn)
+		}
 		id := freezer.Add(addr, val, fmt.Sprintf("scan[%d]", idx))
-		fmt.Printf("  [%d] 0x%X = %s (freeze id=%d)\n", idx, addr, args[1], id)
+		fmt.Printf("  [%d] 0x%X = %s (freeze #%d)\n", idx, addr, args[1], id)
 		ok++
 	}
 	fmt.Printf("Freezing %d/%d addresses\n", ok, ok+failed)
@@ -1002,8 +1011,11 @@ func cmdFreeze(args []string) {
 	if len(args) > 2 {
 		label = strings.Join(args[2:], " ")
 	}
+	if warn := checkWriteSafe(currentHandle, addr); warn != "" {
+		fmt.Printf("WARNING: %s\n", warn)
+	}
 	id := freezer.Add(addr, val, label)
-	fmt.Printf("Freezing 0x%X = %s (id=%d)\n", addr, args[1], id)
+	fmt.Printf("Freezing 0x%X = %s (freeze #%d)\n", addr, args[1], id)
 }
 
 func cmdUnfreeze(args []string) {
