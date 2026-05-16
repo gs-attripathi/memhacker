@@ -122,7 +122,7 @@ func main() {
 			cmdShowAddressList()
 		case "freeze", "f":
 			Log.Info("CMD: freeze %v", args)
-			cmdFreeze(args, reader)
+			cmdFreeze(args)
 		case "ifreeze", "if":
 			Log.Info("CMD: ifreeze %v", args)
 			cmdIndexFreeze(args)
@@ -755,24 +755,10 @@ func cmdWrite(args []string) {
 		fmt.Println("Invalid address:", err)
 		return
 	}
-	// Strip optional "force" keyword from value args
-	force := false
-	valArgs := args[1:]
-	if len(valArgs) > 0 && strings.ToLower(valArgs[len(valArgs)-1]) == "force" {
-		force = true
-		valArgs = valArgs[:len(valArgs)-1]
-	}
-	val, err := encodeValue(currentDT, strings.Join(valArgs, " "))
+	val, err := encodeValue(currentDT, strings.Join(args[1:], " "))
 	if err != nil {
 		fmt.Println("Invalid value:", err)
 		return
-	}
-	if !force {
-		if warn := checkWriteSafe(currentHandle, addr); warn != "" {
-			fmt.Printf("Cannot write to 0x%X — %s\n", addr, warn)
-			fmt.Printf("  Use: write %s <value> force  to override\n", args[0])
-			return
-		}
 	}
 	if err := WriteMemory(currentHandle, addr, val); err != nil {
 		fmt.Println("Write failed:", err)
@@ -820,15 +806,8 @@ func cmdIndexWrite(args []string) {
 		fmt.Println("Not attached")
 		return
 	}
-	// Strip optional "force" keyword
-	force := false
-	filtered2 := args[:0:len(args)]
-	for _, a := range args {
-		if strings.ToLower(a) == "force" { force = true } else { filtered2 = append(filtered2, a) }
-	}
-	args = filtered2
 	if len(args) < 2 {
-		fmt.Println("Usage: iwrite <index|range|list> <value> [force]")
+		fmt.Println("Usage: iwrite <index|range|list> <value>")
 		fmt.Println("  e.g: iwrite 5 100       <- write to result #5")
 		fmt.Println("       iwrite 5-7 100     <- write to results #5 to #7")
 		fmt.Println("       iwrite 1,3,5 100   <- write to results #1, #3, #5")
@@ -855,15 +834,8 @@ func cmdIndexWrite(args []string) {
 			continue
 		}
 		addr := func() uintptr { a, _ := scanner.getResult(idx-1); return a }()
-		if !force {
-			if warn := checkWriteSafe(currentHandle, addr); warn != "" {
-				fmt.Printf("  [%d] Cannot write to 0x%X — %s\n", idx, addr, warn)
-				failed++
-				continue
-			}
-		}
 		if err := WriteMemory(currentHandle, addr, val); err != nil {
-			fmt.Printf("  [%d] 0x%X failed: %v\n", idx, addr, err)
+			fmt.Printf("  [%d] 0x%X skipped: %v\n", idx, addr, err)
 			failed++
 		} else {
 			fmt.Printf("  [%d] 0x%X = %s\n", idx, addr, args[1])
@@ -901,15 +873,8 @@ func cmdIndexFreeze(args []string) {
 		fmt.Println("Not attached")
 		return
 	}
-	// Strip optional "force" keyword
-	force := false
-	filtered := args[:0:len(args)]
-	for _, a := range args {
-		if strings.ToLower(a) == "force" { force = true } else { filtered = append(filtered, a) }
-	}
-	args = filtered
 	if len(args) < 2 {
-		fmt.Println("Usage: ifreeze <index|range|list> <value> [force]")
+		fmt.Println("Usage: ifreeze <index|range|list> <value>")
 		fmt.Println("  e.g: ifreeze 5 100       <- freeze result #5")
 		fmt.Println("       ifreeze 5-7 100     <- freeze results #5 to #7")
 		fmt.Println("       ifreeze 1,3,5 100   <- freeze results #1, #3, #5")
@@ -933,13 +898,6 @@ func cmdIndexFreeze(args []string) {
 			continue
 		}
 		addr := func() uintptr { a, _ := scanner.getResult(idx-1); return a }()
-		if !force {
-			if warn := checkWriteSafe(currentHandle, addr); warn != "" {
-				fmt.Printf("  [%d] Cannot freeze 0x%X — %s\n", idx, addr, warn)
-				failed++
-				continue
-			}
-		}
 		id := freezer.Add(addr, val, fmt.Sprintf("scan[%d]", idx))
 		fmt.Printf("  [%d] 0x%X = %s (freeze #%d)\n", idx, addr, args[1], id)
 		ok++
@@ -1021,7 +979,7 @@ func cmdRead(args []string) {
 	fmt.Printf("0x%X = %s (%s)\n", addr, val, dataTypeName(dt))
 }
 
-func cmdFreeze(args []string, reader *bufio.Reader) {
+func cmdFreeze(args []string) {
 	if currentHandle == 0 {
 		fmt.Println("Not attached")
 		return
@@ -1043,14 +1001,6 @@ func cmdFreeze(args []string, reader *bufio.Reader) {
 	label := ""
 	if len(args) > 2 {
 		label = strings.Join(args[2:], " ")
-	}
-	force := len(args) > 3 && strings.ToLower(args[len(args)-1]) == "force"
-	if !force {
-		if warn := checkWriteSafe(currentHandle, addr); warn != "" {
-			fmt.Printf("Cannot freeze 0x%X — %s\n", addr, warn)
-			fmt.Printf("  Use: freeze %s %s force  to override\n", args[0], args[1])
-			return
-		}
 	}
 	id := freezer.Add(addr, val, label)
 	fmt.Printf("Freezing 0x%X = %s (freeze #%d)\n", addr, args[1], id)

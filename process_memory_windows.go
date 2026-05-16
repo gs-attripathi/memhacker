@@ -199,29 +199,10 @@ func ReadMemory(handle windows.Handle, addr uintptr, size int) ([]byte, error) {
 }
 
 func WriteMemory(handle windows.Handle, addr uintptr, data []byte) error {
-	var oldProt uint32
-	Log.Debug("WriteMemory: addr=0x%X size=%d", addr, len(data))
-
-	// Try writing directly first (page may already be writable — no VirtualProtectEx needed)
 	var written uintptr
 	err := windows.WriteProcessMemory(handle, addr, &data[0], uintptr(len(data)), &written)
-	if err == nil {
-		Log.Debug("WriteMemory: addr=0x%X wrote %d bytes OK (direct)", addr, written)
-		return nil
-	}
-
-	// Direct write failed — try changing page protection to writable
-	ret, _, _ := procVirtualProtectEx.Call(uintptr(handle), addr, uintptr(len(data)), 0x40, uintptr(unsafe.Pointer(&oldProt)))
-	if ret == 0 {
-		// VirtualProtectEx itself failed — memory may be freed, anti-tamper, or kernel page
-		Log.Error("WriteMemory: addr=0x%X VirtualProtectEx failed — memory may be freed or protected", addr)
-		return fmt.Errorf("cannot change page protection at 0x%X (freed memory or anti-tamper)", addr)
-	}
-
-	err = windows.WriteProcessMemory(handle, addr, &data[0], uintptr(len(data)), &written)
-	procVirtualProtectEx.Call(uintptr(handle), addr, uintptr(len(data)), uintptr(oldProt), uintptr(unsafe.Pointer(&oldProt)))
 	if err != nil {
-		Log.Error("WriteMemory: addr=0x%X failed: %v", addr, err)
+		Log.Debug("WriteMemory: addr=0x%X failed: %v", addr, err)
 		return err
 	}
 	Log.Debug("WriteMemory: addr=0x%X wrote %d bytes OK", addr, written)
