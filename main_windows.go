@@ -99,6 +99,9 @@ func main() {
 		case "freeze", "f":
 			Log.Info("CMD: freeze %v", args)
 			cmdFreeze(args)
+		case "ifreeze", "if":
+			Log.Info("CMD: ifreeze %v", args)
+			cmdIndexFreeze(args)
 		case "unfreeze", "uf":
 			Log.Info("CMD: unfreeze %v", args)
 			cmdUnfreeze(args)
@@ -204,12 +207,13 @@ VALUE OPS
   read <addr> [dt]       - read value at address
   write <addr> <value>   - write value at address
   iwrite <idx> <value>   - write to scan result by index (e.g: iwrite 5 100  iwrite 5-7 100  iwrite 1,3,5 100)
+  ifreeze <idx> <value>  - freeze scan result by index  (e.g: ifreeze 5 100  ifreeze 5-7 100)
   add <addr> [label]     - add to address list
   addrlist               - show address list
 
 FREEZING
   freeze <addr> <value> [label]  - freeze address to value
-  unfreeze <id>                  - unfreeze by ID
+  unfreeze <id|range|list>       - unfreeze by ID (e.g: unfreeze 3  unfreeze 1-5  unfreeze 1,3,5)
   frozen                         - show frozen entries
 
 POINTER SCANNING (CE-style multi-session)
@@ -701,25 +705,7 @@ func cmdIndexWrite(args []string) {
 		return
 	}
 
-	// Parse indices from first arg — supports single (5), range (5-7), list (1,3,5)
-	var indices []int
-	spec := args[0]
-	for _, part := range strings.Split(spec, ",") {
-		part = strings.TrimSpace(part)
-		if strings.Contains(part, "-") {
-			bounds := strings.SplitN(part, "-", 2)
-			var lo, hi int
-			fmt.Sscanf(bounds[0], "%d", &lo)
-			fmt.Sscanf(bounds[1], "%d", &hi)
-			for i := lo; i <= hi; i++ {
-				indices = append(indices, i)
-			}
-		} else {
-			var idx int
-			fmt.Sscanf(part, "%d", &idx)
-			indices = append(indices, idx)
-		}
-	}
+	indices := parseIndexSpec(args[0])
 
 	ok, failed := 0, 0
 	for _, idx := range indices {
@@ -738,6 +724,66 @@ func cmdIndexWrite(args []string) {
 		}
 	}
 	fmt.Printf("Written to %d/%d addresses\n", ok, ok+failed)
+}
+
+// parseIndexSpec parses "5", "5-7", or "1,3,5-7" into a list of 1-based indices
+func parseIndexSpec(spec string) []int {
+	var indices []int
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, "-") {
+			bounds := strings.SplitN(part, "-", 2)
+			var lo, hi int
+			fmt.Sscanf(bounds[0], "%d", &lo)
+			fmt.Sscanf(bounds[1], "%d", &hi)
+			for i := lo; i <= hi; i++ {
+				indices = append(indices, i)
+			}
+		} else {
+			var idx int
+			fmt.Sscanf(part, "%d", &idx)
+			indices = append(indices, idx)
+		}
+	}
+	return indices
+}
+
+// ifreeze <index|range|list> <value> — freeze scan results by index
+func cmdIndexFreeze(args []string) {
+	if currentHandle == 0 {
+		fmt.Println("Not attached")
+		return
+	}
+	if len(args) < 2 {
+		fmt.Println("Usage: ifreeze <index|range|list> <value>")
+		fmt.Println("  e.g: ifreeze 5 100       <- freeze result #5")
+		fmt.Println("       ifreeze 5-7 100     <- freeze results #5 to #7")
+		fmt.Println("       ifreeze 1,3,5 100   <- freeze results #1, #3, #5")
+		return
+	}
+	if scanner == nil || len(scanner.Results) == 0 {
+		fmt.Println("No scan results. Run scan first.")
+		return
+	}
+	val, err := encodeValue(currentDT, args[1])
+	if err != nil {
+		fmt.Println("Invalid value:", err)
+		return
+	}
+	indices := parseIndexSpec(args[0])
+	ok, failed := 0, 0
+	for _, idx := range indices {
+		if idx < 1 || idx > len(scanner.Results) {
+			fmt.Printf("  [%d] out of range (total %d)\n", idx, len(scanner.Results))
+			failed++
+			continue
+		}
+		addr := scanner.Results[idx-1].Address
+		id := freezer.Add(addr, val, fmt.Sprintf("scan[%d]", idx))
+		fmt.Printf("  [%d] 0x%X = %s (freeze id=%d)\n", idx, addr, args[1], id)
+		ok++
+	}
+	fmt.Printf("Freezing %d/%d addresses\n", ok, ok+failed)
 }
 
 func cmdAddToList(args []string) {
@@ -843,12 +889,14 @@ func cmdFreeze(args []string) {
 
 func cmdUnfreeze(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: unfreeze <id>")
+		fmt.Println("Usage: unfreeze <id|range|list>  e.g: unfreeze 3  unfreeze 1-5  unfreeze 1,3,5")
 		return
 	}
-	id, _ := strconv.Atoi(args[0])
-	freezer.Remove(id)
-	fmt.Printf("Unfroze id=%d\n", id)
+	indices := parseIndexSpec(args[0])
+	for _, id := range indices {
+		freezer.Remove(id)
+		fmt.Printf("Unfroze id=%d\n", id)
+	}
 }
 
 func cmdFrozenList() {
