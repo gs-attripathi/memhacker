@@ -1026,15 +1026,19 @@ func cmdUnfreeze(args []string) {
 			return
 		}
 	}
-	// Otherwise treat as position / range / list (1-based position in frozen list)
+	// Position-based removal — sort DESCENDING so removing high positions first
+	// doesn't shift lower positions, allowing ranges like 1-100 to work correctly.
 	indices := parseIndexSpec(arg)
+	sort.Sort(sort.Reverse(sort.IntSlice(indices)))
+	ok := 0
 	for _, pos := range indices {
 		if freezer.RemoveByPosition(pos) {
-			fmt.Printf("Unfroze position %d\n", pos)
+			ok++
 		} else {
-			fmt.Printf("Position %d not found in frozen list\n", pos)
+			fmt.Printf("Position %d not found\n", pos)
 		}
 	}
+	fmt.Printf("Unfroze %d entries\n", ok)
 }
 
 func cmdFrozenList() {
