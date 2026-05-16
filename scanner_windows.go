@@ -774,14 +774,34 @@ func (ms *MemoryScanner) nextScanFromSnapshot(params ScanParams) int {
 	if params.DT == TypeString || params.DT == TypeBytes { sz = len(params.Value) }
 	if sz == 0 { return 0 }
 
-	fmt.Printf("  comparing snapshot vs live memory (%d chunks)...\n", len(snap.chunks))
+	totalChunks := len(snap.chunks)
+	fmt.Printf("  comparing snapshot vs live memory (%d chunks)...\n", totalChunks)
+
+	var doneChunks int64
+	var foundSoFar int64
+	doneCh2 := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-doneCh2:
+				return
+			case <-tick.C:
+				d := atomic.LoadInt64(&doneChunks)
+				f := atomic.LoadInt64(&foundSoFar)
+				pct := float64(d) / float64(totalChunks) * 100
+				fmt.Printf("\r  ... %d/%d chunks (%.1f%%) | survivors=%d   ", d, totalChunks, pct, f)
+			}
+		}
+	}()
 
 	numCPU := runtime.NumCPU()
 
 	type chunkResult struct{ results []ScanResult }
 	resultCh := make(chan chunkResult, numCPU*2)
 
-	jobs := make(chan snapshotChunk, len(snap.chunks))
+	jobs := make(chan snapshotChunk, totalChunks)
 	for _, c := range snap.chunks { jobs <- c }
 	close(jobs)
 
@@ -835,7 +855,9 @@ func (ms *MemoryScanner) nextScanFromSnapshot(params ScanParams) int {
 						local = append(local, ScanResult{Address: c.addr + uintptr(i), Value: cp})
 					}
 				}
+				atomic.AddInt64(&doneChunks, 1)
 				if len(local) > 0 {
+					atomic.AddInt64(&foundSoFar, int64(len(local)))
 					resultCh <- chunkResult{local}
 				}
 			}
@@ -847,6 +869,8 @@ func (ms *MemoryScanner) nextScanFromSnapshot(params ScanParams) int {
 	for r := range resultCh {
 		all = append(all, r.results...)
 	}
+	close(doneCh2)
+	fmt.Println()
 	ms.Results = all
 	Log.Info("nextScanFromSnapshot: %d results", len(all))
 	return len(all)
@@ -863,22 +887,39 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 
 	sz := old.valSize
 	nzf := buildNearZeroFast(params)
+	total := old.count
 
 	const chunkBytes = 20 * 4096
 	chunkAddrs := chunkBytes / 8
 	if chunkAddrs < 1024 { chunkAddrs = 1024 }
 
-	// Gap-based grouping parameters:
-	// Bridge gaps up to maxGap so crossing a page boundary costs nothing.
-	// Cap total read per call at maxSpan to avoid reading huge sparse spans.
-	const maxGap  = 64 * 1024        // bridge gaps up to 64KB
-	const maxSpan = 1 * 1024 * 1024  // never read more than 1MB per RPM call
+	const maxGap  = 64 * 1024
+	const maxSpan = 1 * 1024 * 1024
 
 	newW, err := newDiskWriter(sz)
 	if err != nil {
 		Log.Error("nextScanDisk: can't create output: %v", err)
 		return 0
 	}
+
+	var processed int64
+	var kept     int64
+	doneCh := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-doneCh:
+				return
+			case <-tick.C:
+				p := atomic.LoadInt64(&processed)
+				k := atomic.LoadInt64(&kept)
+				pct := float64(p) / float64(total) * 100
+				fmt.Printf("\r  ... %d/%d (%.1f%%) | survivors=%d   ", p, total, pct, k)
+			}
+		}
+	}()
 
 	addrChunk := make([]uintptr, chunkAddrs)
 	oldVals   := make([]byte, chunkAddrs*sz)
@@ -934,11 +975,16 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 				}
 				if keep {
 					newW.append(addrChunk[k], newVal)
+					atomic.AddInt64(&kept, 1)
 				}
 			}
+			atomic.AddInt64(&processed, int64(n))
 			i = j
 		}
 	}
+
+	close(doneCh)
+	fmt.Println()
 
 	newW.flush()
 	count := newW.count
@@ -950,7 +996,6 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 		return 0
 	}
 
-	// If small enough, load back to RAM for fast access
 	if count < diskResThreshold/10 {
 		dr, _ := newW.toDiskResultSet()
 		ms.Results = dr.toMemory()
