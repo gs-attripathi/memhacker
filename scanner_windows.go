@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -268,8 +270,9 @@ func pointerSize() int {
 
 type MemoryScanner struct {
 	handle   windows.Handle
-	Results  []ScanResult
-	snapshot *memSnapshot // non-nil after ScanUnknown first scan
+	Results  []ScanResult    // in-memory results (< diskResThreshold)
+	diskRes  *diskResultSet  // disk-backed results (>= diskResThreshold)
+	snapshot *memSnapshot    // non-nil after ScanUnknown first scan
 }
 
 func NewMemoryScanner(handle windows.Handle) *MemoryScanner {
@@ -281,6 +284,28 @@ func (ms *MemoryScanner) clearSnapshot() {
 		ms.snapshot.close()
 		ms.snapshot = nil
 	}
+}
+
+func (ms *MemoryScanner) clearDiskRes() {
+	if ms.diskRes != nil {
+		ms.diskRes.delete()
+		ms.diskRes = nil
+	}
+}
+
+func (ms *MemoryScanner) totalResults() int {
+	if ms.diskRes != nil { return ms.diskRes.count }
+	return len(ms.Results)
+}
+
+// getResult returns a result by 0-based index, from disk or RAM.
+func (ms *MemoryScanner) getResult(i int) (uintptr, []byte) {
+	if ms.diskRes != nil {
+		addr, val := ms.diskRes.get(i)
+		return addr, val
+	}
+	r := ms.Results[i]
+	return r.Address, r.Value
 }
 
 // nearZeroFast holds pre-computed params for the integer-comparison fast path.
@@ -557,27 +582,71 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		}
 	}()
 
+	ms.clearDiskRes()
 	var all []ScanResult
+	var diskW *diskWriter
+	sz2 := sz // capture for closure
+
 	for batch := range resultChan {
-		all = append(all, batch...)
+		// Switch to disk when threshold exceeded — avoids RAM spike
+		if diskW == nil && len(all)+len(batch) > diskResThreshold {
+			var werr error
+			diskW, werr = newDiskWriter(sz2)
+			if werr != nil {
+				Log.Warn("disk result fallback failed: %v — staying in RAM", werr)
+			} else {
+				for _, r := range all { diskW.append(r.Address, r.Value) }
+				all = nil
+			}
+		}
+		if diskW != nil {
+			for _, r := range batch { diskW.append(r.Address, r.Value) }
+		} else {
+			all = append(all, batch...)
+		}
 		atomic.AddInt64(&foundCount, int64(len(batch)))
-		if params.ResultCap > 0 && len(all) >= params.ResultCap {
-			atomic.StoreInt32(&scanCancelFlag, 1) // stop readers/scanners
-			all = all[:params.ResultCap]
-			break
+		if params.ResultCap > 0 {
+			total := len(all)
+			if diskW != nil { total = diskW.count }
+			if total >= params.ResultCap {
+				atomic.StoreInt32(&scanCancelFlag, 1)
+				if diskW != nil && diskW.count > params.ResultCap {
+					// cap is approximate for disk mode
+				} else if len(all) > params.ResultCap {
+					all = all[:params.ResultCap]
+				}
+				break
+			}
 		}
 	}
-	// drain resultChan so scanner goroutines can exit
 	for range resultChan {}
 	close(doneCh)
 
-	fmt.Println() // end the \r progress line
+	fmt.Println()
 	if atomic.LoadInt32(&scanCancelFlag) != 0 && params.ResultCap == 0 {
-		// Only treat as user cancel if not a cap stop
 		ms.Results = nil
+		if diskW != nil { diskW.flush(); diskW.addrFile.Close(); diskW.valFile.Close()
+			os.Remove(diskW.addrPath); os.Remove(diskW.valPath) }
 		fmt.Println("  Scan cancelled — results cleared for fresh start.")
 		return 0
 	}
+
+	if diskW != nil {
+		diskW.flush()
+		dr, err := diskW.toDiskResultSet()
+		if err != nil {
+			Log.Error("failed to open disk result set: %v", err)
+			ms.Results = nil
+			return 0
+		}
+		ms.diskRes = dr
+		ms.Results = nil
+		fmt.Printf("  %d results stored in %s + %s\n", dr.count,
+			filepath.Base(diskW.addrPath), filepath.Base(diskW.valPath))
+		Log.Info("FirstScan: %d results on disk", dr.count)
+		return dr.count
+	}
+
 	ms.Results = all
 	Log.Info("FirstScan: done, found %d results", len(all))
 	return len(all)
@@ -783,10 +852,121 @@ func (ms *MemoryScanner) nextScanFromSnapshot(params ScanParams) int {
 	return len(all)
 }
 
+// nextScanDisk implements CE-style disk streaming NextScan with page-grouping.
+// Reads addresses from disk in chunks, groups consecutive addresses by 4KB page,
+// makes ONE ReadProcessMemory call per page group (same as CE's nextnextscanmem).
+func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
+	old := ms.diskRes
+	ms.diskRes = nil
+	defer old.delete()
+
+	sz := old.valSize
+	nzf := buildNearZeroFast(params)
+
+	// CE uses 20*4096/varsize addresses per chunk
+	const chunkBytes = 20 * 4096
+	chunkAddrs := chunkBytes / 8 // addresses per chunk (each addr = 8 bytes)
+	if chunkAddrs < 1024 { chunkAddrs = 1024 }
+
+	newW, err := newDiskWriter(sz)
+	if err != nil {
+		Log.Error("nextScanDisk: can't create output: %v", err)
+		return 0
+	}
+
+	addrChunk := make([]uintptr, chunkAddrs)
+	oldVals   := make([]byte, chunkAddrs*sz)
+	const pageMask = ^uintptr(0xFFF) // 4KB page mask
+
+	pos := 0
+	for pos < old.count {
+		n := old.readAddressChunk(pos, chunkAddrs, addrChunk)
+		if n == 0 { break }
+		old.readValueChunk(pos, n, oldVals)
+		pos += n
+
+		// Page-grouping: group consecutive addresses by 4KB page.
+		// ONE ReadProcessMemory per page group — CE's key speed trick.
+		i := 0
+		for i < n {
+			pageBase := addrChunk[i] & pageMask
+
+			// Find last address in the same page
+			j := i + 1
+			for j < n && (addrChunk[j]+uintptr(sz)-1)&pageMask == pageBase {
+				j++
+			}
+			// j is now one past the last address in this page group
+
+			// Read entire span from first to last address+sz in one call
+			spanStart := addrChunk[i]
+			spanEnd   := addrChunk[j-1] + uintptr(sz)
+			spanSize  := int(spanEnd - spanStart)
+
+			pageData, err := ReadMemory(ms.handle, spanStart, spanSize)
+			if err != nil || len(pageData) < sz {
+				i = j
+				continue
+			}
+
+			// Compare each address in this group
+			for k := i; k < j; k++ {
+				off := int(addrChunk[k] - spanStart)
+				if off+sz > len(pageData) { continue }
+				newVal := pageData[off : off+sz]
+				oldVal := oldVals[k*sz : k*sz+sz]
+
+				var keep bool
+				if nzf.enabled {
+					if nzf.is32 {
+						v := binary.LittleEndian.Uint32(newVal)
+						keep = v&0x7FFFFFFF <= nzf.abits32
+					} else {
+						v := binary.LittleEndian.Uint64(newVal)
+						keep = v&0x7FFFFFFFFFFFFFFF <= nzf.abits64
+					}
+				} else {
+					keep = compareValues(params.DT, oldVal, newVal, params.Value, params.Value2, params.ST, params.Tolerance)
+				}
+				if keep {
+					newW.append(addrChunk[k], newVal)
+				}
+			}
+			i = j
+		}
+	}
+
+	newW.flush()
+	count := newW.count
+
+	if count == 0 {
+		newW.addrFile.Close(); newW.valFile.Close()
+		os.Remove(newW.addrPath); os.Remove(newW.valPath)
+		ms.Results = nil
+		return 0
+	}
+
+	// If small enough, load back to RAM for fast access
+	if count < diskResThreshold/10 {
+		dr, _ := newW.toDiskResultSet()
+		ms.Results = dr.toMemory()
+		dr.delete()
+		return len(ms.Results)
+	}
+
+	dr, _ := newW.toDiskResultSet()
+	ms.diskRes = dr
+	ms.Results = nil
+	return count
+}
+
 func (ms *MemoryScanner) NextScan(params ScanParams) int {
-	// If we have a snapshot from unknown first scan, use it for comparison
+	// Route to appropriate NextScan implementation
 	if ms.snapshot != nil {
 		return ms.nextScanFromSnapshot(params)
+	}
+	if ms.diskRes != nil {
+		return ms.nextScanDisk(params)
 	}
 	if len(ms.Results) == 0 {
 		Log.Warn("NextScan: called with 0 results")

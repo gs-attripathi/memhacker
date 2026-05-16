@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -28,11 +29,12 @@ type memSnapshot struct {
 }
 
 func newMemSnapshot(valSize int) (*memSnapshot, error) {
-	f, err := os.CreateTemp("", "memhacker_*.snap")
+	path := filepath.Join(exeDir(), "memhacker_snapshot.snap")
+	f, err := os.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create snapshot file: %v", err)
 	}
-	return &memSnapshot{file: f, path: f.Name(), valSize: valSize}, nil
+	return &memSnapshot{file: f, path: path, valSize: valSize}, nil
 }
 
 // writeChunk appends raw bytes to the snapshot file and records the chunk location.

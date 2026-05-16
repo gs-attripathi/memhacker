@@ -399,7 +399,7 @@ func cmdClose() {
 	}
 	currentHandle = 0
 	currentPID = 0
-	if scanner != nil { scanner.clearSnapshot() }
+	if scanner != nil { scanner.clearSnapshot(); scanner.clearDiskRes() }
 	scanner = nil
 	pointerMap = nil
 	fmt.Println("Detached")
@@ -638,7 +638,7 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	if !ok {
 		return
 	}
-	fmt.Printf("Filtering %d results...\n", len(scanner.Results))
+	fmt.Printf("Filtering %d results...\n", scanner.totalResults())
 	start := time.Now()
 	count := scanner.NextScan(p)
 	elapsed := time.Since(start)
@@ -660,21 +660,19 @@ func cmdResults(args []string) {
 
 
 func showResults(n int) {
-	if scanner == nil || len(scanner.Results) == 0 {
+	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No results")
 		return
 	}
-	// Refresh values
-	scanner.RefreshValues(currentDT)
-	total := len(scanner.Results)
-	if n > total {
-		n = total
-	}
+	total := scanner.totalResults()
+	if n > total { n = total }
 	fmt.Printf("%-20s  %s\n", "Address", "Value")
 	fmt.Println(strings.Repeat("-", 40))
 	for i := 0; i < n; i++ {
-		r := scanner.Results[i]
-		fmt.Printf("0x%-18X  %s\n", r.Address, decodeValue(currentDT, r.Value))
+		addr, _ := scanner.getResult(i)
+		val, err := scanner.ReadCurrentValue(addr, currentDT)
+		if err != nil { val = "?" }
+		fmt.Printf("0x%-18X  %s\n", addr, val)
 	}
 	if total > n {
 		fmt.Printf("... and %d more (use 'results <N>' to show more)\n", total-n)
@@ -743,7 +741,7 @@ func cmdIndexWrite(args []string) {
 			failed++
 			continue
 		}
-		addr := scanner.Results[idx-1].Address
+		addr := func() uintptr { a, _ := scanner.getResult(idx-1); return a }()
 		if err := WriteMemory(currentHandle, addr, val); err != nil {
 			fmt.Printf("  [%d] 0x%X failed: %v\n", idx, addr, err)
 			failed++
@@ -807,7 +805,7 @@ func cmdIndexFreeze(args []string) {
 			failed++
 			continue
 		}
-		addr := scanner.Results[idx-1].Address
+		addr := func() uintptr { a, _ := scanner.getResult(idx-1); return a }()
 		id := freezer.Add(addr, val, fmt.Sprintf("scan[%d]", idx))
 		fmt.Printf("  [%d] 0x%X = %s (freeze id=%d)\n", idx, addr, args[1], id)
 		ok++
@@ -1244,6 +1242,7 @@ func cmdModules() {
 func cmdReset() {
 	if scanner != nil {
 		scanner.clearSnapshot()
+		scanner.clearDiskRes()
 		scanner.Results = nil
 	}
 	fmt.Println("Scan results cleared")
