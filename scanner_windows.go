@@ -270,8 +270,6 @@ func NewMemoryScanner(handle windows.Handle) *MemoryScanner {
 	return &MemoryScanner{handle: handle}
 }
 
-const maxScanResults = 10_000_000 // hard cap — scanning for 0 on large games can hit 100M+
-
 func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	Log.Info("FirstScan: type=%s scan=%d writable=%v", dataTypeName(params.DT), params.ST, params.Writable)
 	regions := EnumMemoryRegions(ms.handle, params.Writable)
@@ -286,23 +284,18 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	}
 	close(jobs)
 
-	var doneCount int64 // atomic regions processed
-	var stopped  int32  // atomic stop flag for result cap
-
+	var doneCount int64
 	resultChan := make(chan []ScanResult, numCPU*4)
 	var wg sync.WaitGroup
 
-	isFloat := params.DT == TypeFloat32 || params.DT == TypeFloat64
+	isFloat    := params.DT == TypeFloat32 || params.DT == TypeFloat64
+	isNumeric  := params.DT != TypeString && params.DT != TypeBytes
 
 	for i := 0; i < numCPU; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for r := range jobs {
-				if atomic.LoadInt32(&stopped) != 0 {
-					atomic.AddInt64(&doneCount, 1)
-					continue
-				}
 				data, err := ReadMemory(ms.handle, r.BaseAddress, int(r.RegionSize))
 				atomic.AddInt64(&doneCount, 1)
 				if err != nil || len(data) == 0 {
@@ -318,9 +311,11 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 
 				var local []ScanResult
 
-				// Fast path: exact scan with bytes.Index — skip for floats since they need tolerance
+				// Fast path: exact non-float scan — bytes.Index (SIMD), shared value slice
 				if params.ST == ScanExact && !isFloat && len(params.Value) == sz {
 					needle := params.Value[:sz]
+					sharedVal := make([]byte, sz)
+					copy(sharedVal, needle)
 					searchIn := data
 					offset := 0
 					for {
@@ -328,23 +323,35 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 						if idx < 0 {
 							break
 						}
-						cp := make([]byte, sz)
-						copy(cp, needle)
 						local = append(local, ScanResult{
 							Address: r.BaseAddress + uintptr(offset+idx),
-							Value:   cp,
+							Value:   sharedVal, // all exact matches share one value copy
 						})
 						advance := idx + 1
 						offset += advance
 						searchIn = searchIn[advance:]
 					}
 				} else {
+					// General path — aligned scan (CE default: step by value size, not 1 byte)
+					// + arena allocation (one large alloc per region, not one per match)
+					step := 1
+					if isNumeric {
+						step = sz
+					}
+					const arenaBlock = 65536
+					arena := make([]byte, arenaBlock*sz)
+					arenaOff := 0
 					local = make([]ScanResult, 0, 64)
-					for i := 0; i <= len(data)-sz; i++ {
+					for i := 0; i <= len(data)-sz; i += step {
 						chunk := data[i : i+sz]
 						if compareValues(params.DT, nil, chunk, params.Value, params.Value2, params.ST, params.Tolerance) {
-							cp := make([]byte, sz)
+							if arenaOff+sz > len(arena) {
+								arena = make([]byte, arenaBlock*sz)
+								arenaOff = 0
+							}
+							cp := arena[arenaOff : arenaOff+sz : arenaOff+sz]
 							copy(cp, chunk)
+							arenaOff += sz
 							local = append(local, ScanResult{
 								Address: r.BaseAddress + uintptr(i),
 								Value:   cp,
@@ -353,7 +360,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 					}
 				}
 
-				if len(local) > 0 && atomic.LoadInt32(&stopped) == 0 {
+				if len(local) > 0 {
 					resultChan <- local
 				}
 			}
@@ -371,7 +378,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 				return
 			case <-tick.C:
 				d := atomic.LoadInt64(&doneCount)
-				fmt.Printf("  ... %d/%d regions scanned\n", d, total)
+				fmt.Printf("  ... %d/%d regions | %d results\n", d, total, len(ms.Results))
 			}
 		}
 	}()
@@ -382,20 +389,11 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	}()
 
 	var all []ScanResult
-	hitCap := false
 	for batch := range resultChan {
 		all = append(all, batch...)
-		if len(all) >= maxScanResults && !hitCap {
-			hitCap = true
-			atomic.StoreInt32(&stopped, 1)
-			fmt.Printf("  WARNING: hit %d result cap — too many matches, narrow your scan\n", maxScanResults)
-		}
 	}
 	close(doneCh)
 
-	if hitCap {
-		all = all[:maxScanResults]
-	}
 	ms.Results = all
 	Log.Info("FirstScan: done, found %d results", len(all))
 	return len(all)
