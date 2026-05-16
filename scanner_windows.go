@@ -852,9 +852,10 @@ func (ms *MemoryScanner) nextScanFromSnapshot(params ScanParams) int {
 	return len(all)
 }
 
-// nextScanDisk implements CE-style disk streaming NextScan with page-grouping.
-// Reads addresses from disk in chunks, groups consecutive addresses by 4KB page,
-// makes ONE ReadProcessMemory call per page group (same as CE's nextnextscanmem).
+// nextScanDisk streams NextScan from disk with gap-based address grouping.
+// CE groups by 4KB page boundary. We go further: bridge any gap up to maxGap bytes,
+// capped at maxSpan per read. More addresses per RPM call = fewer kernel transitions.
+// Two addresses 8 bytes apart but on different pages = 1 call instead of 2.
 func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 	old := ms.diskRes
 	ms.diskRes = nil
@@ -863,10 +864,15 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 	sz := old.valSize
 	nzf := buildNearZeroFast(params)
 
-	// CE uses 20*4096/varsize addresses per chunk
 	const chunkBytes = 20 * 4096
-	chunkAddrs := chunkBytes / 8 // addresses per chunk (each addr = 8 bytes)
+	chunkAddrs := chunkBytes / 8
 	if chunkAddrs < 1024 { chunkAddrs = 1024 }
+
+	// Gap-based grouping parameters:
+	// Bridge gaps up to maxGap so crossing a page boundary costs nothing.
+	// Cap total read per call at maxSpan to avoid reading huge sparse spans.
+	const maxGap  = 64 * 1024        // bridge gaps up to 64KB
+	const maxSpan = 1 * 1024 * 1024  // never read more than 1MB per RPM call
 
 	newW, err := newDiskWriter(sz)
 	if err != nil {
@@ -876,7 +882,6 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 
 	addrChunk := make([]uintptr, chunkAddrs)
 	oldVals   := make([]byte, chunkAddrs*sz)
-	const pageMask = ^uintptr(0xFFF) // 4KB page mask
 
 	pos := 0
 	for pos < old.count {
@@ -885,20 +890,19 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 		old.readValueChunk(pos, n, oldVals)
 		pos += n
 
-		// Page-grouping: group consecutive addresses by 4KB page.
-		// ONE ReadProcessMemory per page group — CE's key speed trick.
+		// Gap-based grouping: extend group as long as next address is within maxGap
+		// AND total span stays under maxSpan. Bridges page boundaries transparently.
 		i := 0
 		for i < n {
-			pageBase := addrChunk[i] & pageMask
-
-			// Find last address in the same page
 			j := i + 1
-			for j < n && (addrChunk[j]+uintptr(sz)-1)&pageMask == pageBase {
+			for j < n {
+				gap  := addrChunk[j] - addrChunk[j-1]
+				span := addrChunk[j] + uintptr(sz) - addrChunk[i]
+				if gap > maxGap || span > maxSpan { break }
 				j++
 			}
-			// j is now one past the last address in this page group
+			// j is one past last address in this group
 
-			// Read entire span from first to last address+sz in one call
 			spanStart := addrChunk[i]
 			spanEnd   := addrChunk[j-1] + uintptr(sz)
 			spanSize  := int(spanEnd - spanStart)
