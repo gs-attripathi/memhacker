@@ -343,11 +343,17 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 			skipped++
 			continue
 		}
-		for off := uintptr(0); off < r.RegionSize; off += chunkSize {
-			sz := r.RegionSize - off
-			if sz > chunkSize {
-				sz = chunkSize
-			}
+		rEnd := r.BaseAddress + r.RegionSize
+		// Apply address range filter if set
+		lo := r.BaseAddress
+		hi := rEnd
+		if params.RangeLo > 0 && params.RangeLo > lo { lo = params.RangeLo }
+		if params.RangeHi > 0 && params.RangeHi < hi { hi = params.RangeHi }
+		if lo >= hi { continue }
+
+		for off := lo - r.BaseAddress; off < hi-r.BaseAddress; off += uintptr(chunkSize) {
+			sz := hi - r.BaseAddress - off
+			if sz > uintptr(chunkSize) { sz = uintptr(chunkSize) }
 			chunks = append(chunks, scanChunk{r.BaseAddress + off, int(sz)})
 		}
 	}

@@ -146,6 +146,8 @@ func main() {
 			cmdPointerResultsFreeze(args)
 		case "modules", "mod":
 			cmdModules()
+		case "regions", "reg":
+			cmdRegions(args)
 		case "reset":
 			Log.Info("CMD: reset")
 			cmdReset()
@@ -189,7 +191,9 @@ PROCESS
 
 SCANNING
   type <dt>              - set data type (i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 str bytes)
-  scan <type> [value] [all] - first scan (default: writable memory only; add 'all' for full scan)
+  scan <type> [value] [all] [range <lo> <hi>] - first scan
+                           default: writable private memory only; 'all' for full scan
+                           range: limit to address range  e.g: scan exact 100 range 0x1000000 0x2000000
     types: exact <v>  unknown  bigger <v>  smaller <v>  between <v1> <v2>
            changed  unchanged  increased  decreased  incby <v>  decby <v>  notequal <v>
   next <type> [value]    - filter scan (same types as scan)
@@ -533,14 +537,28 @@ func cmdScan(args []string, reader *bufio.Reader) {
 		return
 	}
 
-	// Strip optional "all" keyword — scans all readable memory instead of writable-only
+	// Strip optional keywords: "all", "range <lo> <hi>"
 	scanAll := false
-	filtered := args[:0:len(args)]
-	for _, a := range args {
-		if strings.ToLower(a) == "all" {
+	var rangeLo, rangeHi uintptr
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch strings.ToLower(args[i]) {
+		case "all":
 			scanAll = true
-		} else {
-			filtered = append(filtered, a)
+		case "range":
+			if i+2 < len(args) {
+				lo, err1 := resolveAddr(args[i+1])
+				hi, err2 := resolveAddr(args[i+2])
+				if err1 == nil && err2 == nil {
+					rangeLo, rangeHi = lo, hi
+					i += 2
+				} else {
+					fmt.Println("Usage: scan ... range <lo_addr> <hi_addr>")
+					return
+				}
+			}
+		default:
+			filtered = append(filtered, args[i])
 		}
 	}
 	args = filtered
@@ -549,12 +567,16 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	if !ok {
 		return
 	}
-	// Default: writable memory only — game values are always writable.
-	// Full scan (textures, mapped files) is 10-30x more data and rarely needed.
 	p.Writable = !scanAll
+	p.RangeLo = rangeLo
+	p.RangeHi = rangeHi
 	scope := "writable"
 	if scanAll { scope = "all" }
-	fmt.Printf("Scanning for %s [type=%s scope=%s]...\n", args[0], dataTypeName(currentDT), scope)
+	if rangeLo > 0 {
+		fmt.Printf("Scanning for %s [type=%s scope=%s range=0x%X-0x%X]...\n", args[0], dataTypeName(currentDT), scope, rangeLo, rangeHi)
+	} else {
+		fmt.Printf("Scanning for %s [type=%s scope=%s]...\n", args[0], dataTypeName(currentDT), scope)
+	}
 	start := time.Now()
 	count := scanner.FirstScan(p)
 	elapsed := time.Since(start)
@@ -1090,6 +1112,27 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		return
 	}
 	storeAndPrintResults(results, currentHandle, maxResults)
+}
+
+func cmdRegions(args []string) {
+	if currentHandle == 0 {
+		fmt.Println("Not attached")
+		return
+	}
+	// Optional filter: "all" shows all readable, default shows writable private only
+	showAll := len(args) > 0 && strings.ToLower(args[0]) == "all"
+	regions := EnumMemoryRegions(currentHandle, !showAll)
+	fmt.Printf("%-20s  %-20s  %-10s  %s\n", "Base", "End", "Size(MB)", "Type")
+	fmt.Println(strings.Repeat("-", 65))
+	for _, r := range regions {
+		end := r.BaseAddress + r.RegionSize
+		sizeMB := float64(r.RegionSize) / (1024 * 1024)
+		typ := "PRIVATE"
+		if r.Type == 0x40000 { typ = "MAPPED" }
+		if r.Type == 0x1000000 { typ = "IMAGE" }
+		fmt.Printf("0x%-18X  0x%-18X  %-10.1f  %s\n", r.BaseAddress, end, sizeMB, typ)
+	}
+	fmt.Printf("\nTotal: %d regions  (use: scan exact 100 range 0xBASE 0xEND)\n", len(regions))
 }
 
 func cmdModules() {

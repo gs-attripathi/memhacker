@@ -81,6 +81,8 @@ type ScanParams struct {
 	Tolerance  float64
 	Writable   bool
 	Executable bool
+	RangeLo    uintptr // if set, only scan addresses >= RangeLo
+	RangeHi    uintptr // if set, only scan addresses < RangeHi
 }
 
 // FrozenEntry - address being frozen to a value
