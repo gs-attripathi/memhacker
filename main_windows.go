@@ -1239,30 +1239,47 @@ func cmdPmapSessions() {
 }
 
 // pmclear — clear all sessions
-// pmexport <file.scandata> — export current pmap to CE-compatible .scandata format
-// CE can load this directly: Pointer Scanner → File → Load pointer map
+// pmexport <source.pmap> <output.scandata>  — convert pmap file to CE format directly
+// pmexport <output.scandata>                — export current in-memory pmap
+// CE: Pointer Scanner → File → Load pointer map → select .scandata file
 func cmdPmapExportCE(args []string) {
-	if len(args) < 1 {
-		fmt.Println("Usage: pmexport <file.scandata>")
-		fmt.Println("  Exports current pmap to Cheat Engine compatible format")
-		fmt.Println("  In CE: Pointer Scanner → File → Load pointer map → select file")
+	if len(args) == 0 {
+		fmt.Println("Usage: pmexport <source.pmap> <output.scandata>  <- convert file directly")
+		fmt.Println("       pmexport <output.scandata>                <- export in-memory pmap")
+		fmt.Println("  In CE: Pointer Scanner → File → Load pointer map → select .scandata")
 		return
 	}
-	if currentHandle == 0 {
-		fmt.Println("Not attached")
-		return
+
+	var pm *PointerMap
+	var outPath string
+
+	if len(args) >= 2 {
+		// Direct file conversion — no game needed
+		outPath = args[1]
+		fmt.Printf("Loading %s...\n", args[0])
+		var err error
+		pm, err = LoadPointerMap(args[0])
+		if err != nil {
+			fmt.Println("Load failed:", err)
+			return
+		}
+		fmt.Printf("Loaded: %d entries\n", len(pm.Entries))
+	} else {
+		// Use in-memory pmap
+		outPath = args[0]
+		if pointerMap == nil {
+			fmt.Println("No pmap in memory. Use: pmexport <source.pmap> <output.scandata>")
+			return
+		}
+		pm = pointerMap
 	}
-	if pointerMap == nil {
-		fmt.Println("No pmap in memory. Run 'pmap' first.")
-		return
-	}
-	path := args[0]
-	fmt.Printf("Exporting pmap to CE format: %s (%d entries)...\n", path, len(pointerMap.Entries))
-	if err := ExportPmapToCE(pointerMap, path, 0); err != nil {
+
+	fmt.Printf("Exporting %d entries to CE format: %s...\n", len(pm.Entries), outPath)
+	if err := ExportPmapToCE(pm, outPath, 0); err != nil {
 		fmt.Println("Export failed:", err)
 		return
 	}
-	fmt.Printf("Done. Load in CE: Pointer Scanner → File → Load pointer map → %s\n", path)
+	fmt.Printf("Done. In CE: Pointer Scanner → File → Load pointer map → %s\n", outPath)
 }
 
 func cmdPmapClear() {
