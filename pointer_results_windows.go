@@ -459,22 +459,32 @@ func cmdPointerResultsList(args []string) {
 		}
 	}
 
-	fmt.Printf("%-5s  %-20s  %-14s  %s\n", "#", "Address", "Label", "Chain")
-	fmt.Println(strings.Repeat("-", 100))
+	attached := currentHandle != 0
+	fmt.Printf("%-5s  %-20s  %-10s  %-14s  %s\n", "#", "Address", "Value", "Label", "Chain")
+	fmt.Println(strings.Repeat("-", 110))
 
 	shown := 0
 	for i, r := range lastPscanResults {
 		if filterAddr || filterOK {
 			addr, valid := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
-			if !valid {
-				continue
+			if !valid { continue }
+			if filterAddr && addr != wantAddr { continue }
+			val := "-"
+			if attached {
+				if v, err := scanner.ReadCurrentValue(addr, currentDT); err == nil { val = v }
 			}
-			if filterAddr && addr != wantAddr {
-				continue
+			fmt.Printf("%-5d  0x%-18X  %-10s  %-14s  %s\n", i+1, addr, val, r.Label, r.Chain.String())
+		} else if attached {
+			addr, valid := VerifyChain(currentHandle, currentModules, r.Chain, currentIs32Bit)
+			val := "BROKEN"
+			addrStr := "-"
+			if valid {
+				addrStr = fmt.Sprintf("0x%X", addr)
+				if v, err := scanner.ReadCurrentValue(addr, currentDT); err == nil { val = v }
 			}
-			fmt.Printf("%-5d  0x%-18X  %-14s  %s\n", i+1, addr, r.Label, r.Chain.String())
+			fmt.Printf("%-5d  %-20s  %-10s  %-14s  %s\n", i+1, addrStr, val, r.Label, r.Chain.String())
 		} else {
-			fmt.Printf("%-5d  %-20s  %-14s  %s\n", i+1, "-", r.Label, r.Chain.String())
+			fmt.Printf("%-5d  %-20s  %-10s  %-14s  %s\n", i+1, "-", "-", r.Label, r.Chain.String())
 		}
 		shown++
 	}
