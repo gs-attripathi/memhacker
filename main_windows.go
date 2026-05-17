@@ -157,6 +157,9 @@ func main() {
 		case "prsave":
 			Log.Info("CMD: prsave %v", args)
 			cmdPointerResultsSave(args)
+		case "prmerge":
+			Log.Info("CMD: prmerge %v", args)
+			cmdPointerResultsMerge(args)
 		case "prload":
 			Log.Info("CMD: prload %v", args)
 			cmdPointerResultsLoad(args)

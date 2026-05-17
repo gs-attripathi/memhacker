@@ -138,6 +138,72 @@ func LoadPointerResults(path string) (*PointerResultsFile, []PointerChain, error
 var lastPscanResults []PointerResult     // in-memory last pscan output
 var lastLoadedFile   *PointerResultsFile // last prload file, for expected value comparison
 
+// prmerge <file1.json> <file2.json> [file3.json] ...
+// Loads multiple chain JSON files and keeps only chains that appear in ALL of them.
+// Offline equivalent of cross-session intersection — no game or pmap needed.
+func cmdPointerResultsMerge(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: prmerge <file1.json> <file2.json> [file3.json] ...")
+		fmt.Println("  Keeps only chains that appear in ALL files (offline cross-session intersection)")
+		fmt.Println("  e.g: prmerge s1_chains.json s2_chains.json s3_chains.json")
+		return
+	}
+
+	// Load first file as the base set
+	_, chains0, err := LoadPointerResults(args[0])
+	if err != nil {
+		fmt.Printf("Load failed [%s]: %v\n", args[0], err)
+		return
+	}
+	candidates := make(map[string]PointerChain, len(chains0))
+	for _, c := range chains0 {
+		candidates[c.Key()] = c
+	}
+	fmt.Printf("  [1/%d] %s — %d chains\n", len(args), args[0], len(candidates))
+
+	// Intersect with each subsequent file
+	for i, path := range args[1:] {
+		_, chains, err := LoadPointerResults(path)
+		if err != nil {
+			fmt.Printf("  [%d/%d] Load failed [%s]: %v — skipping\n", i+2, len(args), path, err)
+			continue
+		}
+		if len(chains) == 0 {
+			fmt.Printf("  [%d/%d] %s — 0 chains (skipping, would kill all results)\n", i+2, len(args), path)
+			continue
+		}
+		other := make(map[string]struct{}, len(chains))
+		for _, c := range chains {
+			other[c.Key()] = struct{}{}
+		}
+		filtered := make(map[string]PointerChain)
+		for key, c := range candidates {
+			if _, ok := other[key]; ok {
+				filtered[key] = c
+			}
+		}
+		candidates = filtered
+		fmt.Printf("  [%d/%d] %s — %d chains → %d survivors after intersect\n",
+			i+2, len(args), path, len(chains), len(candidates))
+	}
+
+	if len(candidates) == 0 {
+		fmt.Println("\nNo chains survived intersection.")
+		fmt.Println("Tips: try pscan with deeper depth (7), larger offset, or 'game' filter on each pmap separately")
+		return
+	}
+
+	// Store as in-memory results
+	results := make([]PointerResult, 0, len(candidates))
+	for _, c := range candidates {
+		results = append(results, PointerResult{Chain: c})
+	}
+	lastPscanResults = results
+	fmt.Printf("\n%d chains survived — stored in memory\n", len(results))
+	fmt.Println("Tip: prsave merged.json  ← save merged chains")
+	fmt.Println("     prverify            ← verify against running game")
+}
+
 // prsave <file> — save last pscan results to file
 func cmdPointerResultsSave(args []string) {
 	if len(args) == 0 {
