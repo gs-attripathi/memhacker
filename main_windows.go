@@ -148,6 +148,9 @@ func main() {
 			cmdPmapAdd(args)
 		case "pmsessions":
 			cmdPmapSessions()
+		case "pmexport":
+			Log.Info("CMD: pmexport %v", args)
+			cmdPmapExportCE(args)
 		case "pmclear":
 			Log.Info("CMD: pmclear")
 			cmdPmapClear()
@@ -1236,6 +1239,32 @@ func cmdPmapSessions() {
 }
 
 // pmclear — clear all sessions
+// pmexport <file.scandata> — export current pmap to CE-compatible .scandata format
+// CE can load this directly: Pointer Scanner → File → Load pointer map
+func cmdPmapExportCE(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: pmexport <file.scandata>")
+		fmt.Println("  Exports current pmap to Cheat Engine compatible format")
+		fmt.Println("  In CE: Pointer Scanner → File → Load pointer map → select file")
+		return
+	}
+	if currentHandle == 0 {
+		fmt.Println("Not attached")
+		return
+	}
+	if pointerMap == nil {
+		fmt.Println("No pmap in memory. Run 'pmap' first.")
+		return
+	}
+	path := args[0]
+	fmt.Printf("Exporting pmap to CE format: %s (%d entries)...\n", path, len(pointerMap.Entries))
+	if err := ExportPmapToCE(pointerMap, path, 0); err != nil {
+		fmt.Println("Export failed:", err)
+		return
+	}
+	fmt.Printf("Done. Load in CE: Pointer Scanner → File → Load pointer map → %s\n", path)
+}
+
 func cmdPmapClear() {
 	pscanSessions = nil
 	pointerMap = nil

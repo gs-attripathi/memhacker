@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -857,4 +858,89 @@ func VerifyChain(handle windows.Handle, modules []ModuleInfo, chain PointerChain
 		addr = ptr + offset
 	}
 	return addr, true
+}
+
+// ---------------------------------------------------------------------------
+// CE-compatible pmap export (.scandata format)
+// Matches CE's pointervaluelist.pas exportToStream format exactly.
+// CE can load this file directly for its pointer scanner.
+// ---------------------------------------------------------------------------
+
+const ceScandataVersion = byte(1)
+const ceMagic           = byte(0xCE)
+
+func ExportPmapToCE(pm *PointerMap, path string, maxLevel uint32) error {
+	f, err := os.Create(path)
+	if err != nil { return fmt.Errorf("cannot create file: %v", err) }
+	defer f.Close()
+
+	// CE uses zlib compression (TCompressionStream)
+	zw := zlib.NewWriter(f)
+
+	w := func(v interface{}) { binary.Write(zw, binary.LittleEndian, v) }
+
+	// Magic + version
+	zw.Write([]byte{ceMagic, ceScandataVersion})
+
+	// Module list
+	w(uint32(len(pm.Modules)))
+	for _, m := range pm.Modules {
+		name := []byte(m.Name)
+		w(uint32(len(name)))
+		zw.Write(name)
+		w(uint64(m.Base))
+	}
+
+	// specificBaseAsStaticOnly = false (no base restriction)
+	zw.Write([]byte{0})
+
+	// maxLevel (15 for 64-bit, 7 for 32-bit)
+	if maxLevel == 0 {
+		if pm.Is32Bit { maxLevel = 7 } else { maxLevel = 15 }
+	}
+	w(maxLevel)
+
+	// Total pointer count
+	w(uint64(len(pm.Entries)))
+
+	// Build module range lookup for static data tagging
+	type modRange struct { lo, hi uintptr; idx int }
+	modRanges := make([]modRange, len(pm.Modules))
+	for i, m := range pm.Modules {
+		modRanges[i] = modRange{m.Base, m.Base + uintptr(m.Size), i}
+	}
+	findMod := func(addr uintptr) int {
+		for _, r := range modRanges {
+			if addr >= r.lo && addr < r.hi { return r.idx }
+		}
+		return -1
+	}
+
+	// Write entries grouped by pointer value (entries already sorted by value)
+	i := 0
+	for i < len(pm.Entries) {
+		val := pm.Entries[i].value
+		// Count addresses with same value
+		j := i
+		for j < len(pm.Entries) && pm.Entries[j].value == val { j++ }
+
+		w(uint64(val))      // pointerValue
+		w(uint32(j - i))    // address count
+
+		for k := i; k < j; k++ {
+			addr := pm.Entries[k].addr
+			w(uint64(addr))
+			modIdx := findMod(addr)
+			if modIdx >= 0 {
+				zw.Write([]byte{1}) // hasStaticData
+				w(uint32(modIdx))
+				w(uint32(addr - pm.Modules[modIdx].Base))
+			} else {
+				zw.Write([]byte{0}) // no static data
+			}
+		}
+		i = j
+	}
+
+	return zw.Close()
 }
