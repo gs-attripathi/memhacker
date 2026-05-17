@@ -788,15 +788,31 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 	}
 	sessWg.Wait()
 
-	// Cross-reference across sessions
-	candidates := allChains[0]
-	for i := 1; i < len(allChains); i++ {
+	// Cross-reference across sessions.
+	// Skip sessions with 0 chains — one bad pmap would kill all results silently.
+	var candidates map[string]PointerChain
+	usedSessions := 0
+	for idx, chains := range allChains {
+		if len(chains) == 0 {
+			fmt.Printf("  WARNING: session %d found 0 chains — skipping (bad pmap or wrong address?)\n", idx+1)
+			continue
+		}
+		if candidates == nil {
+			candidates = chains
+			usedSessions++
+			continue
+		}
 		filtered := make(map[string]PointerChain)
 		for key, chain := range candidates {
-			if _, ok := allChains[i][key]; ok { filtered[key] = chain }
+			if _, ok := chains[key]; ok { filtered[key] = chain }
 		}
 		candidates = filtered
-		fmt.Printf("  After cross-ref with session %d: %d candidates\n", i+1, len(candidates))
+		usedSessions++
+		fmt.Printf("  After cross-ref with session %d: %d candidates\n", idx+1, len(candidates))
+	}
+	if usedSessions < len(allChains) {
+		fmt.Printf("  NOTE: used %d/%d sessions (skipped %d with 0 chains)\n",
+			usedSessions, len(allChains), len(allChains)-usedSessions)
 	}
 
 	var results []PointerResult
