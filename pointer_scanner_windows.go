@@ -874,15 +874,11 @@ func ExportPmapToCE(pm *PointerMap, path string, maxLevel uint32) error {
 	if err != nil { return fmt.Errorf("cannot create file: %v", err) }
 	defer f.Close()
 
-	// CE uses zlib compression (TCompressionStream)
 	zw := zlib.NewWriter(f)
-
 	w := func(v interface{}) { binary.Write(zw, binary.LittleEndian, v) }
 
-	// Magic + version
 	zw.Write([]byte{ceMagic, ceScandataVersion})
 
-	// Module list
 	w(uint32(len(pm.Modules)))
 	for _, m := range pm.Modules {
 		name := []byte(m.Name)
@@ -891,19 +887,15 @@ func ExportPmapToCE(pm *PointerMap, path string, maxLevel uint32) error {
 		w(uint64(m.Base))
 	}
 
-	// specificBaseAsStaticOnly = false (no base restriction)
-	zw.Write([]byte{0})
+	zw.Write([]byte{0}) // specificBaseAsStaticOnly = false
 
-	// maxLevel (15 for 64-bit, 7 for 32-bit)
 	if maxLevel == 0 {
 		if pm.Is32Bit { maxLevel = 7 } else { maxLevel = 15 }
 	}
 	w(maxLevel)
-
-	// Total pointer count
 	w(uint64(len(pm.Entries)))
 
-	// Build module range lookup for static data tagging
+	// Build module range lookup
 	type modRange struct { lo, hi uintptr; idx int }
 	modRanges := make([]modRange, len(pm.Modules))
 	for i, m := range pm.Modules {
@@ -916,31 +908,39 @@ func ExportPmapToCE(pm *PointerMap, path string, maxLevel uint32) error {
 		return -1
 	}
 
-	// Write entries grouped by pointer value (entries already sorted by value)
+	total := len(pm.Entries)
+	written := 0
 	i := 0
-	for i < len(pm.Entries) {
+	for i < total {
 		val := pm.Entries[i].value
-		// Count addresses with same value
 		j := i
-		for j < len(pm.Entries) && pm.Entries[j].value == val { j++ }
+		for j < total && pm.Entries[j].value == val { j++ }
 
-		w(uint64(val))      // pointerValue
-		w(uint32(j - i))    // address count
+		w(uint64(val))
+		w(uint32(j - i))
 
 		for k := i; k < j; k++ {
 			addr := pm.Entries[k].addr
 			w(uint64(addr))
 			modIdx := findMod(addr)
 			if modIdx >= 0 {
-				zw.Write([]byte{1}) // hasStaticData
+				zw.Write([]byte{1})
 				w(uint32(modIdx))
 				w(uint32(addr - pm.Modules[modIdx].Base))
 			} else {
-				zw.Write([]byte{0}) // no static data
+				zw.Write([]byte{0})
 			}
 		}
+		written += j - i
 		i = j
+
+		// Progress every 500K entries
+		if written % 500000 == 0 {
+			fmt.Printf("\r  exporting... %d/%d entries (%.1f%%)   ",
+				written, total, float64(written)/float64(total)*100)
+		}
 	}
+	fmt.Printf("\r  exporting... %d/%d entries (100.0%%)   \n", total, total)
 
 	return zw.Close()
 }
