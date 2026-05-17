@@ -874,7 +874,8 @@ func ExportPmapToCE(pm *PointerMap, path string, maxLevel uint32) error {
 	if err != nil { return fmt.Errorf("cannot create file: %v", err) }
 	defer f.Close()
 
-	zw := zlib.NewWriter(f)
+	bf := bufio.NewWriterSize(f, 8*1024*1024) // 8MB buffer reduces disk syscalls
+	zw, _ := zlib.NewWriterLevel(bf, zlib.BestSpeed)
 	w := func(v interface{}) { binary.Write(zw, binary.LittleEndian, v) }
 
 	zw.Write([]byte{ceMagic, ceScandataVersion})
@@ -942,5 +943,6 @@ func ExportPmapToCE(pm *PointerMap, path string, maxLevel uint32) error {
 	}
 	fmt.Printf("\r  exporting... %d/%d entries (100.0%%)   \n", total, total)
 
-	return zw.Close()
+	if err := zw.Close(); err != nil { return err }
+	return bf.Flush()
 }
