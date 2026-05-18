@@ -39,6 +39,16 @@ type addressEntry struct {
 }
 
 func main() {
+	// Disable QuickEdit Mode — prevents Windows from pausing the process
+	// when user clicks on the console window (would freeze scans mid-run)
+	if hIn, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE); err == nil {
+		var mode uint32
+		if windows.GetConsoleMode(hIn, &mode) == nil {
+			const ENABLE_QUICK_EDIT = 0x0040
+			windows.SetConsoleMode(hIn, mode&^ENABLE_QUICK_EDIT)
+		}
+	}
+
 	// Init logger — writes to memhacker.log next to the exe
 	logPath := "memhacker.log"
 	if err := InitLogger(logPath, LogDEBUG, true); err != nil {
