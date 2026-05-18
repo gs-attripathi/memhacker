@@ -245,6 +245,11 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 - MINOR: new feature, new command, behavior change, perf improvement
 - MAJOR: breaking change — new pmap file format, incompatible command changes
 
+**Pre-release suffix rule (IMPORTANT):**
+- During active development: use `-alpha` or `-beta` suffix — e.g. `2.3.0-alpha`, `2.3.0-beta`
+- Only use a clean version number (e.g. `2.3.0`) when the user explicitly asks to create a GitHub release
+- Example flow: `2.3.0-alpha` during dev → user says "create release" → bump to `2.3.0` → release
+
 **Always bump the version and update the table below before pushing.**
 
 ## Version History
@@ -258,7 +263,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 | v2.1.0 | Game root detection fix (iterative strip, UE5 + simple bin dirs), LoadPointerMap game root fix, fast module lookup (binary search), partial case-insensitive attach, prlabel fix, DFS speed (lockless channel, inlined binary search, smaller job structs, larger queue), default depth=5 offset=8192, prlist filter (ok/addr), parallel sessions, auto-save pscan_last_N.json (no overwrite), verify-then-cap in pscan output, pmload multiple files, float scan ±0.1 tolerance, NaN/Inf filter, session labels on progress ticker, pscan JSON data type fix |
 | v2.2.0 | Disk-backed scan results (unknown scan snapshot + all results >1M to disk), CE page-grouping NextScan, gap-based address grouping, scan progress output, writable-only scan default, region filter, scan range/cap/all keywords, iread/iwrite/ifreeze commands, sortable results, position-based unfreeze, unfreeze all/by-address, scan confirmation guard, Ctrl+C cancel, results index display, regions command, CHANGED status in prverify, no VirtualProtectEx (direct write only), freeze silently handles failures. Verified on a popular racing game (open world, 64-bit). |
 
-Current: **v2.2.0** (AppVersion in `logger.go`)
+| v2.3.0 | pmexport CE-compatible .scandata format, prmerge offline cross-session intersection, parallel pscan session fix (skip 0-chain sessions), game scripts folder (car speed rotator + drift), iread command, prlist shows live values, disk-backed scan results improvements |
+
+Current: **v2.3.0-alpha** (AppVersion in `logger.go`) — use clean version only when creating GitHub release
 
 ---
 
