@@ -1,0 +1,12 @@
+# Download car_speed_rotator.py
+# --------------------------------
+
+# Option 1: wget
+wget https://raw.githubusercontent.com/gs-attripathi/memhacker/gamescripts/scripts/car_speed_rotator.py -O car_speed_rotator.py
+
+# Option 2: PowerShell (no wget needed)
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/gs-attripathi/memhacker/gamescripts/scripts/car_speed_rotator.py" -OutFile "car_speed_rotator.py"
+
+# Run the script (as Administrator)
+python car_speed_rotator.py          # ROTATE mode (default)
+python car_speed_rotator.py drift    # DRIFT mode
