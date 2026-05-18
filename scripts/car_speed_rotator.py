@@ -39,8 +39,8 @@ Z_SPEED_OFFSET =  0    # Z is at resolved address
 STEER_OFFSET   = 12    # steer is 3 floats after Z
 
 # --- ROTATE mode ---
-# Forza tuning: negative (game has inverted convention) and half of CE default
-STEER_SENSITIVITY = -0.01745  # radians per steer unit per tick (= -1° per tick, Forza)
+# Forza tuning: negative (inverted convention) and CE default divided by 1.1
+STEER_SENSITIVITY = -0.03173  # radians per steer unit per tick (= -0.0349 / 1.1, Forza)
 DEAD_ZONE         = 0.01
 
 # --- DRIFT mode ---
