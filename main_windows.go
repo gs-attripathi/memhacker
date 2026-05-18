@@ -1148,38 +1148,29 @@ func cmdPmapSave(args []string) {
 // Loads a pmap file — target address is read from the file itself, no need to specify.
 func cmdPmapLoad(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: pmload <file.pmap>")
+		fmt.Println("Usage: pmload <file.pmap> [file2.pmap] ...")
 		return
 	}
-	pm, err := LoadPointerMap(args[0])
-	if err != nil {
-		fmt.Println("Load failed:", err)
-		return
-	}
-	if pm.TargetAddr == 0 {
-		fmt.Println("Warning: this pmap has no target address saved (old format?)")
-		fmt.Println("Use: pmload <file.pmap> <addr_hex>  to specify it manually")
-		if len(args) >= 2 {
-			addr, err := resolveAddr(args[1])
-			if err != nil {
-				fmt.Println("Invalid address:", err)
-				return
-			}
-			pm.TargetAddr = addr
-		} else {
-			return
+	for _, path := range args {
+		pm, err := LoadPointerMap(path)
+		if err != nil {
+			fmt.Printf("Load failed [%s]: %v\n", path, err)
+			continue
 		}
+		if pm.TargetAddr == 0 {
+			fmt.Printf("Warning: %s has no target address saved (old format?) — skipping\n", path)
+			continue
+		}
+		pscanSessions = append(pscanSessions, PointerScanSession{
+			PMap:  pm,
+			Label: path,
+		})
+		Log.Info("pmload: loaded %s, target=0x%X, session count=%d", path, pm.TargetAddr, len(pscanSessions))
+		fmt.Printf("Loaded %s | pid=%d | saved=%s | target=0x%X | session #%d registered\n",
+			path, pm.PID,
+			pm.CreatedAt.Format("2006-01-02 15:04:05"),
+			pm.TargetAddr, len(pscanSessions))
 	}
-	pscanSessions = append(pscanSessions, PointerScanSession{
-		
-		PMap:       pm,
-		Label:      args[0],
-	})
-	Log.Info("pmload: loaded %s, target=0x%X, session count=%d", args[0], pm.TargetAddr, len(pscanSessions))
-	fmt.Printf("Loaded %s | pid=%d | saved=%s | target=0x%X | session #%d registered\n",
-		args[0], pm.PID,
-		pm.CreatedAt.Format("2006-01-02 15:04:05"),
-		pm.TargetAddr, len(pscanSessions))
 }
 
 // pmadd <addr> — add another target address to the last registered session (same pmap)
