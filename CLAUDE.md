@@ -265,7 +265,7 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.3.0 | pmexport CE-compatible .scandata format, prmerge offline cross-session intersection, parallel pscan session fix (skip 0-chain sessions), game scripts folder (car speed rotator + drift), iread command, prlist shows live values, disk-backed scan results improvements |
 
-Current: **v2.3.0-alpha** (AppVersion in `logger.go`) — use clean version only when creating GitHub release
+Current: **v2.3.0** (AppVersion in `logger.go`)
 
 ---
 
