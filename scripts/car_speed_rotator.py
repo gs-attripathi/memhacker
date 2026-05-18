@@ -50,6 +50,9 @@ DRIFT_SPEED_MIN        = 2.0
 # --- Keyboard steering ---
 STEER_KEY_STEP    = 0.05   # how much steer changes per tick while key held
 STEER_CENTER_RATE = 0.03   # how fast steer returns to 0 when no key pressed
+STEER_MAX         = 1.0    # max steer magnitude — prevents wind-up.
+                            # set higher (e.g. 5.0) if you want stronger turns,
+                            # but too high = spinning. 1.0 matches game's internal range.
 
 # --- Speed boost/brake ---
 SPEED_BOOST_MULT  = 1.02   # UP arrow: multiply speed by this each tick (1.02 = +2% per tick)
@@ -229,6 +232,10 @@ def update_keyboard_steer(current_steer):
         else:
             new_steer = current_steer + STEER_CENTER_RATE
 
+    # Clamp to ±STEER_MAX — prevents wind-up where holding a key for seconds
+    # makes correction take just as many seconds and causes spinning
+    if new_steer > STEER_MAX: new_steer = STEER_MAX
+    if new_steer < -STEER_MAX: new_steer = -STEER_MAX
     return new_steer
 
 # =============================================================================
