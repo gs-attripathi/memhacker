@@ -96,6 +96,7 @@ scan exact 0 cap 500000                  <- stop after 500K results
 |---------|-------------|
 | `read <addr> [type]` | Read live value at address |
 | `write <addr> <val>` | Write value to address |
+| `iread <addr> <index>` | Read at `addr + index × sizeof(type)`. e.g. `iread 0x1A2B3C 4` reads 4th element of array |
 | `iwrite <idx> <val>` | Write to scan result by index. Supports range/list: `iwrite 5 100` `iwrite 5-7 100` `iwrite 1,3,5 100` |
 | `add <addr> [label]` | Add address to address list |
 | `addrlist` | Show address list with live values |
@@ -140,6 +141,7 @@ CE-style multi-session pointer scan. Find stable pointer chains that survive gam
 | `pmload <file> [file2] ...` | Load one or more saved pmaps. Multiple files at once: `pmload s1.pmap s2.pmap s3.pmap` |
 | `pmsessions` | List registered sessions |
 | `pmclear` | Clear all sessions |
+| `pmexport <src.pmap> <out.scandata>` | Export pmap to CE-compatible `.scandata` format. CE: Pointer Scanner → File → Load pointer map |
 
 #### Running pscan
 
@@ -167,11 +169,12 @@ After pscan, results are **automatically saved** to `pscan_last_N.json` (never o
 |---------|-------------|
 | `prsave <file.json>` | Save current chains to JSON |
 | `prload <file.json> [addr]` | Load chains. If addr given, keeps only chains resolving to that address |
-| `prverify [addr]` | Re-verify chains against current process |
-| `prlist [ok\|addr]` | List chains. `prlist ok` = only resolvable. `prlist 0xADDR` = only those resolving to addr |
+| `prverify [addr]` | Re-verify chains. Status: `OK` = resolves + value matches, `CHANGED` = resolves but value differs (new game/save), `BROKEN` = dead |
+| `prlist [ok\|addr]` | List chains with live address + value. `prlist ok` = only resolvable. `prlist 0xADDR` = filter by address |
 | `prlabel <index> <label>` | Label a chain (saved with prsave) |
 | `prwrite <index> <val>` | Follow chain, write value once |
 | `prfreeze <index> <val>` | Follow chain, freeze value |
+| `prmerge <f1.json> <f2.json> ...` | Offline cross-session intersection — keeps only chains appearing in ALL files. No game needed. |
 
 ---
 
@@ -256,6 +259,29 @@ prload hp_chains.json     <- load + auto-verify
 prwrite 1 999             <- write via chain
 prfreeze 1 999            <- or freeze
 ```
+
+---
+
+## Game Scripts
+
+The `scripts/` folder contains Python scripts for game manipulation using found pointer chains.
+
+### `car_speed_rotator.py`
+Reads car velocity (X/Y/Z) and steering via pointer chain, modifies velocity in real-time at 60Hz.
+
+```
+python scripts/car_speed_rotator.py          # ROTATE mode (default)
+python scripts/car_speed_rotator.py drift    # DRIFT mode
+```
+
+**Keyboard controls:**
+- `LEFT` / `RIGHT` arrow — steer
+- `UP` arrow — boost speed
+- `DOWN` arrow — reduce speed
+
+Fill in your pointer chain values in the `CONFIG` section at the top. Requires Python + Administrator.
+
+Download commands in `scripts/commands.txt`.
 
 ---
 
