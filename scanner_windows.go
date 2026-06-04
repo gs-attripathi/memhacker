@@ -298,6 +298,12 @@ func (ms *MemoryScanner) totalResults() int {
 	return len(ms.Results)
 }
 
+// hasScanData reports whether there is anything for `next` to filter against —
+// either a normal result set (RAM or disk) or an unknown-scan snapshot.
+func (ms *MemoryScanner) hasScanData() bool {
+	return ms != nil && (ms.snapshot != nil || ms.diskRes != nil || len(ms.Results) > 0)
+}
+
 // getResult returns a result by 0-based index, from disk or RAM.
 func (ms *MemoryScanner) getResult(i int) (uintptr, []byte) {
 	if ms.diskRes != nil {

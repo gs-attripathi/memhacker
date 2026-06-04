@@ -637,10 +637,16 @@ func cmdScan(args []string, reader *bufio.Reader) {
 		return
 	}
 
-	// Guard: confirm before wiping existing results
-	if scanner != nil && scanner.totalResults() > 0 {
-		total := scanner.totalResults()
-		fmt.Printf("  You have %d results. Starting a new scan will clear them. Type 'yes' to confirm: ", total)
+	// Guard: confirm before wiping existing results or an unknown-scan snapshot
+	if scanner.hasScanData() {
+		var what string
+		switch {
+		case scanner.snapshot != nil:
+			what = "an unknown-scan snapshot"
+		default:
+			what = fmt.Sprintf("%d results", scanner.totalResults())
+		}
+		fmt.Printf("  You have %s. Starting a new scan will clear it. Type 'yes' to confirm: ", what)
 		line, _ := reader.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(line)) != "yes" {
 			fmt.Println("  Cancelled.")
@@ -711,7 +717,7 @@ func cmdNext(args []string, reader *bufio.Reader) {
 		fmt.Println("Not attached")
 		return
 	}
-	if scanner == nil || scanner.totalResults() == 0 {
+	if !scanner.hasScanData() {
 		fmt.Println("No previous scan. Run 'scan' first")
 		return
 	}
@@ -723,7 +729,11 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	if !ok {
 		return
 	}
-	fmt.Printf("Filtering %d results...\n", scanner.totalResults())
+	if scanner.snapshot != nil {
+		fmt.Println("Filtering unknown-scan snapshot vs live memory...")
+	} else {
+		fmt.Printf("Filtering %d results...\n", scanner.totalResults())
+	}
 	setQuickEdit(false); defer setQuickEdit(true)
 	start := time.Now()
 	count := scanner.NextScan(p)
