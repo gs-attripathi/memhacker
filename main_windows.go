@@ -335,6 +335,9 @@ POINTER SCANNING
 
   pscan [depth] [offset] [max] [filter] [maxOffsets] [maxAddrsPerHop] [noneg]
                                 - scan across all sessions (sessions run in parallel)
+                                  Before running, prints the understood settings and asks
+                                  y/n. Press y (or Enter) to run. Press n to edit each
+                                  field one-by-one (blank input keeps current).
                                   filter: exe (default), game, all
                                   defaults: depth=5 offset=8192 max=100, negative offsets ON,
                                             maxAddrsPerHop=0 (unlimited)
@@ -1990,14 +1993,79 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 		maxAddressesPerHop, _ = strconv.Atoi(args[5])
 	}
 
-	negLabel := " neg"
-	if !negativeOffsets { negLabel = " noneg" }
-	capLabel := ""
-	if maxAddressesPerHop > 0 {
-		capLabel = fmt.Sprintf(" maxAddrsPerHop=%d", maxAddressesPerHop)
+	// Confirmation step — show what we understood, let the user override per-field.
+	showPscanSettings := func() {
+		negStr := "on"
+		if !negativeOffsets { negStr = "off" }
+		filterStr := baseFilter
+		if filterStr == "" { filterStr = "exe (default)" }
+		offsetsStr := strconv.Itoa(maxOffsetsPerNode)
+		if maxOffsetsPerNode == 0 { offsetsStr = "0 (default 5)" }
+		hopStr := strconv.Itoa(maxAddressesPerHop)
+		if maxAddressesPerHop == 0 { hopStr = "0 (unlimited)" }
+		fmt.Println("Understood pscan settings:")
+		fmt.Printf("  depth             = %d\n", depth)
+		fmt.Printf("  maxOffset         = 0x%X (%d)\n", maxOffset, maxOffset)
+		fmt.Printf("  maxResults        = %d\n", maxResults)
+		fmt.Printf("  filter            = %s\n", filterStr)
+		fmt.Printf("  maxOffsetsPerNode = %s\n", offsetsStr)
+		fmt.Printf("  maxAddrsPerHop    = %s\n", hopStr)
+		fmt.Printf("  negativeOffsets   = %s\n", negStr)
 	}
-	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d%s%s\n",
-		len(pscanSessions), depth, maxOffset, maxResults, negLabel, capLabel)
+
+	readPrompt := func(label, current string) string {
+		fmt.Printf("  %s [%s]: ", label, current)
+		line, _ := reader.ReadString('\n')
+		return strings.TrimSpace(line)
+	}
+
+	for {
+		showPscanSettings()
+		fmt.Print("Run with these? (y/n, default y): ")
+		ans, _ := reader.ReadString('\n')
+		ans = strings.ToLower(strings.TrimSpace(ans))
+		if ans == "" || ans == "y" || ans == "yes" {
+			break
+		}
+		if ans != "n" && ans != "no" {
+			fmt.Println("Cancelled.")
+			return
+		}
+		// Walk each field — blank input keeps current value.
+		fmt.Println("Enter new value for each (blank to keep current):")
+		if v := readPrompt("depth", strconv.Itoa(depth)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil { depth = n } else { fmt.Printf("    invalid (kept %d)\n", depth) }
+		}
+		if v := readPrompt("maxOffset (hex like 0x2000 or decimal)", fmt.Sprintf("0x%X", maxOffset)); v != "" {
+			if n, err := strconv.ParseUint(v, 0, 64); err == nil { maxOffset = uintptr(n) } else { fmt.Printf("    invalid (kept 0x%X)\n", maxOffset) }
+		}
+		if v := readPrompt("maxResults", strconv.Itoa(maxResults)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil { maxResults = n } else { fmt.Printf("    invalid (kept %d)\n", maxResults) }
+		}
+		if v := readPrompt("filter (exe/game/all)", baseFilter); v != "" {
+			v = strings.ToLower(v)
+			if v == "exe" || v == "game" || v == "all" { baseFilter = v } else { fmt.Printf("    invalid (kept %q)\n", baseFilter) }
+		}
+		if v := readPrompt("maxOffsetsPerNode (0=default 5)", strconv.Itoa(maxOffsetsPerNode)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 { maxOffsetsPerNode = n } else { fmt.Printf("    invalid (kept %d)\n", maxOffsetsPerNode) }
+		}
+		if v := readPrompt("maxAddrsPerHop (0=unlimited)", strconv.Itoa(maxAddressesPerHop)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 { maxAddressesPerHop = n } else { fmt.Printf("    invalid (kept %d)\n", maxAddressesPerHop) }
+		}
+		if v := readPrompt("negativeOffsets (on/off)", map[bool]string{true: "on", false: "off"}[negativeOffsets]); v != "" {
+			v = strings.ToLower(v)
+			switch v {
+			case "on", "y", "yes", "true":
+				negativeOffsets = true
+			case "off", "n", "no", "false":
+				negativeOffsets = false
+			default:
+				fmt.Printf("    invalid (kept %v)\n", negativeOffsets)
+			}
+		}
+		// loop back — re-show settings, ask y/n again
+	}
+
 	for i, s := range pscanSessions {
 		fmt.Printf("  [%d] %s -> target=0x%X (%d pmap entries)\n", i+1, s.Label, s.PMap.TargetAddr, len(s.PMap.Entries))
 	}

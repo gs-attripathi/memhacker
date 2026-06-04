@@ -1,4 +1,4 @@
-# MemHacker v2.13.0-alpha
+# MemHacker v2.14.0-alpha
 
 A Cheat Engine alternative written in Go — memory scanner, CE-style multi-session pointer scan, value freeze.
 
@@ -169,6 +169,8 @@ pscan [depth] [offset] [max] [filter] [maxOffsets] [maxAddrsPerHop] [noneg]
 | `noneg` | off | **Disable** negative offsets. By default both positive and negative offsets are scanned (CE's NegativeOffsets, ON). Pass `noneg` to skip the negative pass for ~2× speed. |
 
 **Multiple sessions run in parallel** — total time = slowest session, not sum.
+
+**Confirmation step.** Before the scan starts, `pscan` prints every setting it parsed and asks `y/n`. Press `y` (or Enter) to run, or `n` to walk through each field one-by-one with the current value shown in `[]`. Blank input keeps the current value. Useful when the positional args (`pscan 6 8192 100 exe 5 16`) get hard to read.
 
 **Press `Ctrl+C` during a `pscan` to cancel it.** Workers wind down within a fraction of a second and you're returned to the prompt with whatever partial chains were already collected (no process exit, unlike scan-cancel). Useful for deep scans (depth=6/7) that run longer than you want to wait.
 

@@ -284,8 +284,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 | v2.11.0-alpha | `results` accepts optional `guess` / `g` keyword to add Guess + Confidence columns (same heuristic as `look`). One 8-byte read per displayed row, so it scales with how many you ask for (default n=20). Works with the existing range/list and sort modes. |
 | v2.12.0-alpha | Ctrl+C during `pscan` now cancels the scan and returns to the prompt with partial results, instead of killing the process. Cancellation is checked in the hot DFS path (`submit` and `rscan`) via a global `pscanStopFlag` and propagates across all sessions. `pscanWasCancelled` is sticky so `cmdPointerScan` can label the summary `[CANCELLED]`. The previous Ctrl+C exit semantics still apply when nothing is running. |
 | v2.13.0-alpha | New `pscan` 6th positional arg `maxAddrsPerHop` — caps non-static recursions per shared hop value. Targets the UE5/Unity case where one hop value has hundreds of addresses (pool arrays). Static-base hits remain uncapped — they're the actual chain endpoints. Default 0 = unlimited (no behaviour change). Try 16-32 on depth 6/7 scans. Applied symmetrically in positive and negative offset passes. |
+| v2.14.0-alpha | `pscan` now prints the resolved settings and asks y/n before running. `n` walks each field one-by-one with the current value in `[brackets]` — blank input keeps current. Loops until y is given so corrections can be made iteratively. Solves the "what does `pscan 6 8192 100 exe 5 16` even mean" problem without forcing named-arg syntax. |
 
-Current: **v2.13.0-alpha** (AppVersion in `logger.go`)
+Current: **v2.14.0-alpha** (AppVersion in `logger.go`)
 
 ---
 
