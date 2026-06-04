@@ -55,15 +55,20 @@ func main() {
 		fmt.Printf("Logging to: %s\n", logPath)
 	}
 
-	// Ctrl+C: cancel active scan (clears results) or exit if no scan running
+	// Ctrl+C: cancel active scan/pscan (returns to prompt) or exit if neither running
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	go func() {
 		for range sigCh {
-			if atomic.LoadInt32(&scanActive) != 0 {
+			switch {
+			case atomic.LoadInt32(&scanActive) != 0:
 				atomic.StoreInt32(&scanCancelFlag, 1)
 				fmt.Println("\n  [Ctrl+C] cancelling scan...")
-			} else {
+			case atomic.LoadInt32(&pscanActive) != 0:
+				atomic.StoreInt32(&pscanStopFlag, 1)
+				atomic.StoreInt32(&pscanWasCancelled, 1)
+				fmt.Println("\n  [Ctrl+C] cancelling pointer scan — workers winding down, partial results will be shown...")
+			default:
 				fmt.Println("Bye!")
 				if currentHandle != 0 {
 					CloseProcessHandle(currentHandle)
@@ -334,6 +339,7 @@ POINTER SCANNING
                                   defaults: depth=5 offset=8192 max=100, negative offsets ON
                                   noneg: disable negative offsets (~2x faster, fewer chains)
                                   e.g: pscan 5 4000 100   pscan 6 8192 100 game   pscan 5 8192 100 exe 5 noneg
+                                  Press Ctrl+C during a pscan to cancel and keep partial results.
   (results auto-saved to pscan_last_N.json, only verified chains shown)
 
 POINTER RESULTS
@@ -1996,9 +2002,17 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	})
 	elapsed := time.Since(start)
 
-	fmt.Printf("\nFound %d pointer chain(s) in %v\n", len(results), elapsed)
+	if atomic.LoadInt32(&pscanWasCancelled) != 0 {
+		fmt.Printf("\n[CANCELLED] %d partial chain(s) found in %v before Ctrl+C\n", len(results), elapsed)
+	} else {
+		fmt.Printf("\nFound %d pointer chain(s) in %v\n", len(results), elapsed)
+	}
 	if len(results) == 0 {
-		fmt.Println("No chains found. Try: more sessions, bigger depth/offset, or check target addresses.")
+		if atomic.LoadInt32(&pscanWasCancelled) != 0 {
+			fmt.Println("Cancelled before any chain finished. Try a smaller depth or wait longer next time.")
+		} else {
+			fmt.Println("No chains found. Try: more sessions, bigger depth/offset, or check target addresses.")
+		}
 		return
 	}
 	storeAndPrintResults(results, currentHandle, maxResults)

@@ -424,11 +424,22 @@ type dfsRunner struct {
 	stopped           int32
 }
 
+// pscanActive / pscanStopFlag — set by Ctrl+C handler in main to cancel an in-flight pscan.
+// Checked at every submit() and rscan() entry, so cancellation propagates through every
+// session and every worker without per-runner plumbing.
+//
+// pscanWasCancelled is sticky — reset at the start of each runScan, then set by the
+// Ctrl+C handler. The caller can read it after runScan returns to know whether the
+// results are partial.
+var pscanActive       int32
+var pscanStopFlag     int32
+var pscanWasCancelled int32
+
 // submit — CE's queue/inline policy:
 // Only enqueue if level+3 < maxDepth (not last 3 levels).
 // Last 3 levels are always inlined — avoids flooding queue with near-leaf work.
 func (r *dfsRunner) submit(job dfsJob) {
-	if atomic.LoadInt32(&r.stopped) != 0 { return }
+	if atomic.LoadInt32(&r.stopped) != 0 || atomic.LoadInt32(&pscanStopFlag) != 0 { return }
 	r.wg.Add(1)
 
 	// CE: only try to queue for non-leaf work (level+3 < maxlevel)
@@ -462,7 +473,7 @@ func (r *dfsRunner) run(job dfsJob) {
 // VerifyChain applies offsets in slice order (index 0 first), which correctly
 // starts from static and walks toward target.
 func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, noff int, visited [maxDepthCap]uintptr) {
-	if atomic.LoadInt32(&r.stopped) != 0 { return }
+	if atomic.LoadInt32(&r.stopped) != 0 || atomic.LoadInt32(&pscanStopFlag) != 0 { return }
 
 	// CE: noLoop — exit if this address is already in the current chain
 	if r.noLoop {
@@ -813,6 +824,15 @@ func filterLabel(f string) string {
 }
 
 func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string, maxOffsets int, negativeOffsets bool) []PointerResult {
+	atomic.StoreInt32(&pscanActive, 1)
+	atomic.StoreInt32(&pscanStopFlag, 0)
+	atomic.StoreInt32(&pscanWasCancelled, 0)
+	defer func() {
+		atomic.StoreInt32(&pscanActive, 0)
+		atomic.StoreInt32(&pscanStopFlag, 0)
+		// pscanWasCancelled intentionally left set so cmdPointerScan can detect partial results.
+	}()
+
 	allChains := make([]map[string]PointerChain, len(sessions))
 
 	// Run all sessions in parallel — each gets its own goroutine + DFS worker pool.
