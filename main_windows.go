@@ -333,12 +333,18 @@ POINTER SCANNING
   pmsessions                    - list sessions
   pmclear                       - clear all sessions
 
-  pscan [depth] [offset] [max] [filter] [maxOffsets] [noneg]
+  pscan [depth] [offset] [max] [filter] [maxOffsets] [maxAddrsPerHop] [noneg]
                                 - scan across all sessions (sessions run in parallel)
                                   filter: exe (default), game, all
-                                  defaults: depth=5 offset=8192 max=100, negative offsets ON
+                                  defaults: depth=5 offset=8192 max=100, negative offsets ON,
+                                            maxAddrsPerHop=0 (unlimited)
                                   noneg: disable negative offsets (~2x faster, fewer chains)
-                                  e.g: pscan 5 4000 100   pscan 6 8192 100 game   pscan 5 8192 100 exe 5 noneg
+                                  maxAddrsPerHop: cap non-static recursions per hop value.
+                                    Try 16 or 32 on deep UE5/Unity scans to prune array fan-outs.
+                                    Static hits (terminal chains) are NEVER capped.
+                                  e.g: pscan 5 4000 100   pscan 6 8192 100 game
+                                       pscan 6 8192 100 exe 5 16        <- per-hop cap 16
+                                       pscan 7 32000 100 exe 20 32 noneg
                                   Press Ctrl+C during a pscan to cancel and keep partial results.
   (results auto-saved to pscan_last_N.json, only verified chains shown)
 
@@ -1961,7 +1967,8 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	maxOffset := uintptr(8192)
 	maxResults := 100
 	baseFilter := ""
-	maxOffsetsPerNode := 0 // 0 = use default (5)
+	maxOffsetsPerNode := 0  // 0 = use default (5)
+	maxAddressesPerHop := 0 // 0 = unlimited (current behavior)
 
 	if len(args) > 0 {
 		depth, _ = strconv.Atoi(args[0])
@@ -1979,11 +1986,18 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	if len(args) > 4 {
 		maxOffsetsPerNode, _ = strconv.Atoi(args[4])
 	}
+	if len(args) > 5 {
+		maxAddressesPerHop, _ = strconv.Atoi(args[5])
+	}
 
 	negLabel := " neg"
 	if !negativeOffsets { negLabel = " noneg" }
-	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d%s\n",
-		len(pscanSessions), depth, maxOffset, maxResults, negLabel)
+	capLabel := ""
+	if maxAddressesPerHop > 0 {
+		capLabel = fmt.Sprintf(" maxAddrsPerHop=%d", maxAddressesPerHop)
+	}
+	fmt.Printf("Running pointer scan across %d session(s): depth=%d maxOffset=0x%X maxResults=%d%s%s\n",
+		len(pscanSessions), depth, maxOffset, maxResults, negLabel, capLabel)
 	for i, s := range pscanSessions {
 		fmt.Printf("  [%d] %s -> target=0x%X (%d pmap entries)\n", i+1, s.Label, s.PMap.TargetAddr, len(s.PMap.Entries))
 	}
@@ -1991,14 +2005,15 @@ func cmdPointerScan(args []string, reader *bufio.Reader) {
 	setQuickEdit(false); defer setQuickEdit(true)
 	start := time.Now()
 	results := MultiSessionPointerScan(PointerScanConfig{
-		Sessions:          pscanSessions,
-		MaxDepth:          depth,
-		MaxOffset:         maxOffset,
-		MaxResults:        maxResults,
-		BaseFilter:        baseFilter,
-		MaxOffsetsPerNode: maxOffsetsPerNode,
-		NegativeOffsets:   negativeOffsets,
-		DT:                currentDT,
+		Sessions:           pscanSessions,
+		MaxDepth:           depth,
+		MaxOffset:          maxOffset,
+		MaxResults:         maxResults,
+		BaseFilter:         baseFilter,
+		MaxOffsetsPerNode:  maxOffsetsPerNode,
+		MaxAddressesPerHop: maxAddressesPerHop,
+		NegativeOffsets:    negativeOffsets,
+		DT:                 currentDT,
 	})
 	elapsed := time.Since(start)
 

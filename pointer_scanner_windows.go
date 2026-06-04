@@ -88,15 +88,16 @@ type PointerResult struct {
 }
 
 type PointerScanConfig struct {
-	Sessions          []PointerScanSession
-	MaxDepth          int
-	MaxOffset         uintptr
-	MaxResults        int
-	BaseFilter        string
-	MaxOffsetsPerNode int // CE's LimitToMaxOffsetsPerNode (0 = use default 5)
-	ChainCap          int // unused, kept for API compat
-	DT                DataType
-	NegativeOffsets   bool
+	Sessions           []PointerScanSession
+	MaxDepth           int
+	MaxOffset          uintptr
+	MaxResults         int
+	BaseFilter         string
+	MaxOffsetsPerNode  int // CE's LimitToMaxOffsetsPerNode (0 = use default 5)
+	MaxAddressesPerHop int // 0 = unlimited. Caps non-static recursions sharing one hop value.
+	ChainCap           int // unused, kept for API compat
+	DT                 DataType
+	NegativeOffsets    bool
 }
 
 // ---------------------------------------------------------------------------
@@ -416,12 +417,13 @@ type dfsRunner struct {
 	wg           sync.WaitGroup
 	found        int64 // atomic, for progress ticker
 
-	maxDepth          int
-	maxOffset         uintptr
-	maxOffsetsPerNode int
-	noLoop            bool
-	negativeOffsets   bool // CE's NegativeOffsets flag — also scan values > addr
-	stopped           int32
+	maxDepth           int
+	maxOffset          uintptr
+	maxOffsetsPerNode  int
+	maxAddressesPerHop int  // 0 = unlimited. Caps non-static recursions per hop group.
+	noLoop             bool
+	negativeOffsets    bool // CE's NegativeOffsets flag — also scan values > addr
+	stopped            int32
 }
 
 // pscanActive / pscanStopFlag — set by Ctrl+C handler in main to cancel an in-flight pscan.
@@ -520,7 +522,11 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 			lo--
 		}
 
-		// Process every address that holds this pointer value
+		// Process every address that holds this pointer value.
+		// Static-base hits (terminal chains) are NEVER capped — they're the prize.
+		// Non-static recursions are capped at maxAddressesPerHop to avoid the
+		// "200 actor pointers all sharing one value" UE5/Unity blow-up.
+		nonStaticRecursed := 0
 		for i := lo; i <= hi; i++ {
 			e := entries[i]
 
@@ -545,6 +551,9 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 				atomic.AddInt64(&r.found, 1)
 
 			} else if level+1 < r.maxDepth {
+				if r.maxAddressesPerHop > 0 && nonStaticRecursed >= r.maxAddressesPerHop {
+					continue
+				}
 				// CE: non-static, go deeper — enqueue or inline
 				child := dfsJob{
 					addr:    e.addr,
@@ -554,6 +563,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 					visited: visited,
 				}
 				r.submit(child)
+				nonStaticRecursed++
 			}
 			// level+1 >= maxDepth and not static: dead end (CE: "end of the line")
 		}
@@ -603,6 +613,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 			end++
 		}
 
+		nonStaticRecursed := 0
 		for i := startNeg; i <= end; i++ {
 			e := entries[i]
 			if mod := findInRanges(r.staticRanges, e.addr); mod != nil {
@@ -619,6 +630,9 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 				r.resultsCh <- chain
 				atomic.AddInt64(&r.found, 1)
 			} else if level+1 < r.maxDepth {
+				if r.maxAddressesPerHop > 0 && nonStaticRecursed >= r.maxAddressesPerHop {
+					continue
+				}
 				child := dfsJob{
 					addr:    e.addr,
 					level:   level + 1,
@@ -627,6 +641,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 					visited: visited,
 				}
 				r.submit(child)
+				nonStaticRecursed++
 			}
 		}
 
@@ -640,7 +655,7 @@ func (r *dfsRunner) rscan(addr uintptr, level int, offs [maxDepthCap]uintptr, no
 }
 
 // dfsSingleSession runs the CE-style DFS for one target address.
-func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, maxOffsetsPerNode int, sessLabel string, negativeOffsets bool) []PointerChain {
+func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset uintptr, filter string, maxOffsetsPerNode, maxAddressesPerHop int, sessLabel string, negativeOffsets bool) []PointerChain {
 	if maxDepth > maxDepthCap {
 		Log.Warn("maxDepth %d exceeds cap %d, clamping", maxDepth, maxDepthCap)
 		maxDepth = maxDepthCap
@@ -649,15 +664,16 @@ func dfsSingleSession(pm *PointerMap, target uintptr, maxDepth int, maxOffset ui
 	numWorkers := runtime.NumCPU()
 
 	r := &dfsRunner{
-		pm:                pm,
-		staticRanges:      buildStaticRanges(pm.Modules, filter),
-		jobs:              make(chan dfsJob, dfsQueueSize),
-		resultsCh:         make(chan PointerChain, 65536),
-		maxDepth:          maxDepth,
-		maxOffset:         maxOffset,
-		maxOffsetsPerNode: maxOffsetsPerNode,
-		noLoop:            true,
-		negativeOffsets:   negativeOffsets,
+		pm:                 pm,
+		staticRanges:       buildStaticRanges(pm.Modules, filter),
+		jobs:               make(chan dfsJob, dfsQueueSize),
+		resultsCh:          make(chan PointerChain, 65536),
+		maxDepth:           maxDepth,
+		maxOffset:          maxOffset,
+		maxOffsetsPerNode:  maxOffsetsPerNode,
+		maxAddressesPerHop: maxAddressesPerHop,
+		noLoop:             true,
+		negativeOffsets:    negativeOffsets,
 	}
 
 	// Collector goroutine — drains resultsCh without holding any lock
@@ -785,7 +801,7 @@ func MultiSessionPointerScan(cfg PointerScanConfig) []PointerResult {
 	Log.Info("MultiSessionPointerScan: filter=%s depth=%d offset=0x%X maxResults=%d sessions=%d maxOffsets=%d",
 		filter, cfg.MaxDepth, cfg.MaxOffset, maxResults, len(cfg.Sessions), maxOffsets)
 
-	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, maxOffsets, cfg.NegativeOffsets)
+	results := runScan(cfg.Sessions, cfg.MaxDepth, cfg.MaxOffset, maxResults, filter, maxOffsets, cfg.MaxAddressesPerHop, cfg.NegativeOffsets)
 	if len(results) > 0 {
 		// Auto-save ALL candidates before caller applies maxResults cap.
 		// Never overwrites — increments suffix until a free filename is found.
@@ -823,7 +839,7 @@ func filterLabel(f string) string {
 	return f
 }
 
-func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string, maxOffsets int, negativeOffsets bool) []PointerResult {
+func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, maxResults int, filter string, maxOffsets, maxAddressesPerHop int, negativeOffsets bool) []PointerResult {
 	atomic.StoreInt32(&pscanActive, 1)
 	atomic.StoreInt32(&pscanStopFlag, 0)
 	atomic.StoreInt32(&pscanWasCancelled, 0)
@@ -855,7 +871,7 @@ func runScan(sessions []PointerScanSession, maxDepth int, maxOffset uintptr, max
 			for ti, target := range targets {
 				fmt.Printf("    [sess %d] target [%d/%d] 0x%X — scanning...\n", idx+1, ti+1, len(targets), target)
 				start := time.Now()
-				chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, maxOffsets, fmt.Sprintf("sess %d", idx+1), negativeOffsets)
+				chains := dfsSingleSession(sess.PMap, target, maxDepth, maxOffset, filter, maxOffsets, maxAddressesPerHop, fmt.Sprintf("sess %d", idx+1), negativeOffsets)
 				elapsed := time.Since(start)
 
 				m := make(map[string]PointerChain, len(chains))

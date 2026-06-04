@@ -1,4 +1,4 @@
-# MemHacker v2.12.0-alpha
+# MemHacker v2.13.0-alpha
 
 A Cheat Engine alternative written in Go — memory scanner, CE-style multi-session pointer scan, value freeze.
 
@@ -155,7 +155,7 @@ CE-style multi-session pointer scan. Find stable pointer chains that survive gam
 #### Running pscan
 
 ```
-pscan [depth] [offset] [max] [filter] [maxOffsets] [noneg]
+pscan [depth] [offset] [max] [filter] [maxOffsets] [maxAddrsPerHop] [noneg]
 ```
 
 | Arg | Default | Description |
@@ -164,7 +164,8 @@ pscan [depth] [offset] [max] [filter] [maxOffsets] [noneg]
 | `offset` | `8192` | Max offset per pointer hop |
 | `max` | `100` | Max chains to return |
 | `filter` | `exe` | `exe` = main exe only, `game` = all game DLLs, `all` = everything |
-| `maxOffsets` | `5` | Max offset groups per node (CE default) |
+| `maxOffsets` | `5` | Max **distinct hop sizes** tried per node (CE's `LimitToMaxOffsetsPerNode`) |
+| `maxAddrsPerHop` | `0` (unlimited) | Max non-static recursions per **shared hop value**. Caps the UE5/Unity case where one hop value (e.g. `+0x4`) has hundreds of candidate addresses all in the same actor/object pool. Static-base hits (terminal chains) are **never** capped — they're the chains you actually want. Try `16` or `32` on deep scans (depth 6/7) for large speedups on heavy fan-out games. |
 | `noneg` | off | **Disable** negative offsets. By default both positive and negative offsets are scanned (CE's NegativeOffsets, ON). Pass `noneg` to skip the negative pass for ~2× speed. |
 
 **Multiple sessions run in parallel** — total time = slowest session, not sum.
