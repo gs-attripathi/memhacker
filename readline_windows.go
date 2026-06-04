@@ -23,7 +23,37 @@ const (
 	rlVkTab                = 0x09
 	rlVkReturn             = 0x0D
 	rlVkEscape             = 0x1B
+	rlVkUp                 = 0x26
+	rlVkDown               = 0x28
+	rlHistoryMax           = 200
 )
+
+var commandHistory []string
+
+// addHistory appends a line to in-session history. Skips empty lines and exact
+// duplicates of the most recent entry. Caps at rlHistoryMax.
+func addHistory(line string) {
+	if line == "" {
+		return
+	}
+	if len(commandHistory) > 0 && commandHistory[len(commandHistory)-1] == line {
+		return
+	}
+	commandHistory = append(commandHistory, line)
+	if len(commandHistory) > rlHistoryMax {
+		commandHistory = commandHistory[len(commandHistory)-rlHistoryMax:]
+	}
+}
+
+// replaceLine erases the currently-displayed buf and prints `next` in its place.
+// Updates *buf to a copy of next.
+func replaceLine(buf *[]rune, next []rune) {
+	for range *buf {
+		fmt.Print("\b \b")
+	}
+	fmt.Print(string(next))
+	*buf = append([]rune(nil), next...)
+}
 
 // Windows INPUT_RECORD layout:
 //   EventType uint16  (offset 0)
@@ -137,6 +167,8 @@ func ReadLine(prompt string) string {
 	fmt.Print(prompt)
 
 	var buf []rune
+	histIdx := len(commandHistory) // points "past last" = viewing the live draft
+	var savedDraft []rune          // snapshot of draft when first Up is pressed
 
 	for {
 		ke, ok := readKey(handle)
@@ -150,8 +182,31 @@ func ReadLine(prompt string) string {
 		switch vk {
 
 		case rlVkReturn:
+			line := string(buf)
 			fmt.Println()
-			return string(buf)
+			addHistory(line)
+			return line
+
+		case rlVkUp:
+			if len(commandHistory) == 0 || histIdx == 0 {
+				continue
+			}
+			if histIdx == len(commandHistory) {
+				savedDraft = append([]rune(nil), buf...)
+			}
+			histIdx--
+			replaceLine(&buf, []rune(commandHistory[histIdx]))
+
+		case rlVkDown:
+			if histIdx >= len(commandHistory) {
+				continue
+			}
+			histIdx++
+			if histIdx == len(commandHistory) {
+				replaceLine(&buf, savedDraft)
+			} else {
+				replaceLine(&buf, []rune(commandHistory[histIdx]))
+			}
 
 		case rlVkBack:
 			if len(buf) > 0 {
@@ -165,6 +220,8 @@ func ReadLine(prompt string) string {
 				fmt.Print("\b \b")
 			}
 			buf = nil
+			histIdx = len(commandHistory)
+			savedDraft = nil
 
 		case rlVkTab:
 			line := string(buf)
