@@ -268,11 +268,12 @@ SCANNING                        (default type: f32, default scope: writable priv
          scan exact 100 range 0x1000000 0x2000000
          scan between -0.01 0.01 all
   next <type> [value]           (alias: n) - filter existing results (same types as scan)
-  results [n] [addr|val]        (alias: r) - show top N results, optionally sorted by address or value
-  results <range|list> [addr|val] - show specific results by index
+  results [n] [addr|val] [guess|g]  (alias: r) - show top N results, optional sort, optional type-guess
+  results <range|list> [addr|val] [guess|g]    - show specific results by index
     e.g: results 20 val         - top 20 sorted by value
          results 1-5            - show results #1 to #5
          results 1,3,5 addr     - show #1,#3,#5 sorted by address
+         results 50 guess       - top 50 with auto-guessed type column (1 extra read per row)
   reset                         - clear scan results (Ctrl+C during scan also clears)
 
 VALUE OPS
@@ -706,9 +707,9 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("Found %d results in %v\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20, "")
+		showResults(20, "", false)
 	} else if count > 20 {
-		showResults(10, "")
+		showResults(10, "", false)
 	}
 }
 
@@ -740,9 +741,9 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("%d results remaining (%v)\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20, "")
+		showResults(20, "", false)
 	} else if count > 20 {
-		showResults(10, "")
+		showResults(10, "", false)
 	}
 }
 
@@ -752,8 +753,9 @@ func cmdResults(args []string) {
 		return
 	}
 
-	// Parse args: optional count/range, optional sort keyword
+	// Parse args: optional count/range, optional sort keyword, optional guess keyword
 	sortBy := "" // "addr" or "val"
+	guess := false
 	filtered := args[:0:len(args)]
 	for _, a := range args {
 		switch strings.ToLower(a) {
@@ -761,6 +763,8 @@ func cmdResults(args []string) {
 			sortBy = "addr"
 		case "val", "value":
 			sortBy = "val"
+		case "guess", "g":
+			guess = true
 		default:
 			filtered = append(filtered, a)
 		}
@@ -784,21 +788,48 @@ func cmdResults(args []string) {
 		} else if sortBy == "addr" {
 			sort.Slice(rows, func(i, j int) bool { return rows[i].addr < rows[j].addr })
 		}
-		fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
-		fmt.Println(strings.Repeat("-", 45))
+		if guess {
+			fmt.Printf("%-5s  %-20s  %-18s  %-12s  %s\n", "#", "Address", "Value", "Guess", "Conf.")
+			fmt.Println(strings.Repeat("-", 75))
+		} else {
+			fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
+			fmt.Println(strings.Repeat("-", 45))
+		}
 		for _, r := range rows {
-			fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
+			if guess {
+				gl, conf := guessAt(r.addr)
+				fmt.Printf("%-5d  0x%-18X  %-18s  %-12s  %.2f\n", r.idx, r.addr, r.val, gl, conf)
+			} else {
+				fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
+			}
 		}
 		return
 	}
 
 	n := 20
 	if len(args) > 0 { n, _ = strconv.Atoi(args[0]) }
-	showResults(n, sortBy)
+	showResults(n, sortBy, guess)
 }
 
+// guessAt reads 8 bytes at addr (so guessType can sniff pointers/f64/i64 even
+// when the current data type is smaller) and returns a printable label + confidence.
+func guessAt(addr uintptr) (string, float64) {
+	if currentHandle == 0 {
+		return "-", 0
+	}
+	buf, err := ReadMemory(currentHandle, addr, 8)
+	if err != nil || len(buf) == 0 {
+		return "-", 0
+	}
+	g := guessType(buf, currentHandle, currentIs32Bit)
+	label := g.name
+	if g.extra != "" {
+		label = g.name + " " + g.extra
+	}
+	return label, g.confidence
+}
 
-func showResults(n int, sortBy string) {
+func showResults(n int, sortBy string, guess bool) {
 	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No results")
 		return
@@ -820,10 +851,20 @@ func showResults(n int, sortBy string) {
 		sort.Slice(rows, func(i, j int) bool { return rows[i].addr < rows[j].addr })
 	}
 
-	fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
-	fmt.Println(strings.Repeat("-", 45))
+	if guess {
+		fmt.Printf("%-5s  %-20s  %-18s  %-12s  %s\n", "#", "Address", "Value", "Guess", "Conf.")
+		fmt.Println(strings.Repeat("-", 75))
+	} else {
+		fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
+		fmt.Println(strings.Repeat("-", 45))
+	}
 	for _, r := range rows {
-		fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
+		if guess {
+			gl, conf := guessAt(r.addr)
+			fmt.Printf("%-5d  0x%-18X  %-18s  %-12s  %.2f\n", r.idx, r.addr, r.val, gl, conf)
+		} else {
+			fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
+		}
 	}
 	if total > n {
 		fmt.Printf("... and %d more (use 'results <N>' to show more)\n", total-n)

@@ -1,4 +1,4 @@
-# MemHacker v2.10.0-alpha
+# MemHacker v2.11.0-alpha
 
 A Cheat Engine alternative written in Go — memory scanner, CE-style multi-session pointer scan, value freeze.
 
@@ -71,7 +71,7 @@ Scans **writable private memory only** by default (game values are always here).
 | `scan decby <val>` | Decreased by exactly this amount |
 | `scan notequal <val>` | Not equal to value |
 | `next <type> [val]` (alias `n`) | Filter existing results (same types as scan) |
-| `results [N]` (alias `r`) | Show top N results with live values (default 20) |
+| `results [N] [addr\|val] [guess\|g]` (alias `r`) | Show top N results with live values (default 20). Optional `addr` / `val` sorts the displayed rows. Optional `guess` (or `g`) adds Guess + Confidence columns — same heuristic as `look`, picks the most likely type per address (f32 / f64 / i32 / i64 / i8 / ptr / zero) regardless of the active `type`. Costs one 8-byte read per displayed row — keep N small for big result sets. Range / list also supported: `results 1-5 guess`, `results 1,3,5 val g`. |
 | `reset` | Clear scan results |
 
 **Optional scan keywords** (append to any scan command):

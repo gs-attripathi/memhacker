@@ -281,8 +281,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 | v2.9.0-alpha | Tab-completion for file arguments at the main prompt. Pressing Tab on a partial filename auto-completes if there is exactly one match, or lists all matches if there are multiple. Only activates for commands that take file args: `pmload`, `pmsave`, `pmexport`, `prsave`, `prload`, `prmerge`. Case-sensitive. Implemented via Windows `ReadConsoleInputW` in raw mode — no external deps. |
 | v2.9.1-alpha | Fix: `next` after `scan unknown` printed "No previous scan" because `totalResults()` only counted RAM/disk results, not the snapshot. `next` and `scan`'s overwrite-confirmation now use a new `hasScanData()` check that also sees the snapshot. `scan unknown` → `next changed` now actually filters against the snapshot as documented. |
 | v2.10.0-alpha | Up/Down arrow command history at the main prompt. Last 200 commands kept in-session (not persisted to disk). Bash-style draft preservation: pressing Up saves the in-progress line; Down past the newest history entry restores it. Duplicates of the most recent entry are skipped. Escape resets history nav along with clearing the line. |
+| v2.11.0-alpha | `results` accepts optional `guess` / `g` keyword to add Guess + Confidence columns (same heuristic as `look`). One 8-byte read per displayed row, so it scales with how many you ask for (default n=20). Works with the existing range/list and sort modes. |
 
-Current: **v2.10.0-alpha** (AppVersion in `logger.go`)
+Current: **v2.11.0-alpha** (AppVersion in `logger.go`)
 
 ---
 
