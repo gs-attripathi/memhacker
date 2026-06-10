@@ -27,6 +27,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 /opt/homebrew/bin/go build -ldflags="-s 
 | `pointer_results_windows.go` | prsave/prload/prverify/prwrite/prfreeze |
 | `process_memory_windows.go` | OpenProcess, ReadMemory, GetModules, EnumMemoryRegions |
 | `scanner_windows.go` | Value scan (FirstScan/NextScan), encode/decode values |
+| `keptresults_windows.go` | Disk-backed kept-results store (guess-filtered results accumulate here) |
 | `freeze_windows.go` | 50ms freeze loop |
 | `alias_windows.go` | Address aliases (resolveAddr) |
 | `types.go` | ScanType, DataType enums, ScanParams, ScanResult, FrozenEntry |
@@ -294,7 +295,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.16.0-alpha | `results` guess type filter: `results [n] guess <type> [minconf]` keeps only rows guessed as that type (f32/f64/i32/i64/i8/ptr/zero) with confidence >= minconf (default 0.5), sorted by confidence descending. Walks results until n matches or 100K rows examined. Works in range/list mode too. |
 
-Current: **v2.16.0-alpha** (AppVersion in `logger.go`)
+| v2.17.0-alpha | Disk-backed kept-results store (`keptresults_windows.go`). Every guess-filtered `results` invocation appends its matches to `memhacker_results.bin` (16-byte records: addr/conf/type), deduped by address, never held in RAM. `results kept [n]` views it with live values decoded per entry's guessed type; `results clear` is the only thing that clears it (survives new scans, `reset`, and app restarts). |
+
+Current: **v2.17.0-alpha** (AppVersion in `logger.go`)
 
 ---
 

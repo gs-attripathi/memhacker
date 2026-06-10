@@ -283,12 +283,16 @@ SCANNING                        (default type: f32, default scope: writable priv
   results <range|list> [addr|val] [guess|g [type] [minconf]]   - show specific results by index
     guess type filter: keep only rows guessed as <type> with confidence >= minconf
     (default 0.5), sorted by confidence; types: f32 f64 i32 i64 i8 ptr zero
+    filtered matches are APPENDED to a disk-backed kept list (deduped by address);
+    the kept list accumulates across scans and survives 'reset' and app restarts
+  results kept [n]              - show the kept list (live values, per-entry type)
+  results clear                 - clear the kept list (memhacker_results.bin)
     e.g: results 20 val         - top 20 sorted by value
          results 1-5            - show results #1 to #5
          results 1,3,5 addr     - show #1,#3,#5 sorted by address
          results 50 guess       - top 50 with auto-guessed type column (1 extra read per row)
-         results 20 guess f32   - first 20 results guessed as f32 (conf >= 0.5)
-         results 20 g ptr 0.9   - same idea, pointers with conf >= 0.9
+         results 20 guess f32   - first 20 guessed as f32 (conf >= 0.5), kept to disk
+         results 1-400 g i8 0.7 - i8 matches in #1-400 with conf >= 0.7, kept to disk
   reset                         - clear scan results (Ctrl+C during scan also clears)
 
 VALUE OPS
@@ -773,6 +777,23 @@ func cmdNext(args []string, reader *bufio.Reader) {
 }
 
 func cmdResults(args []string) {
+	// Kept-results subcommands work without a live scan set
+	if len(args) > 0 {
+		switch strings.ToLower(args[0]) {
+		case "clear":
+			keptClear()
+			fmt.Println("Kept results cleared")
+			return
+		case "kept", "k":
+			n := 20
+			if len(args) > 1 {
+				n, _ = strconv.Atoi(args[1])
+			}
+			showKeptResults(n)
+			return
+		}
+	}
+
 	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No results")
 		return
@@ -832,6 +853,7 @@ func cmdResults(args []string) {
 		printResultRows(rows, guess)
 		if gFilter != "" {
 			fmt.Printf("%d match(es) guessed as %s with conf >= %.2f\n", len(rows), gFilter, gThresh)
+			reportKeptAppend(rows, gFilter)
 		}
 		return
 	}
@@ -883,6 +905,17 @@ func printResultRows(rows []resultRow, guess bool) {
 			fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
 		}
 	}
+}
+
+// reportKeptAppend appends guess-filtered rows to the disk-backed kept store
+// and prints what changed.
+func reportKeptAppend(rows []resultRow, gFilter string) {
+	added, dupes := keptAppend(rows, gFilter)
+	fmt.Printf("kept: +%d new", added)
+	if dupes > 0 {
+		fmt.Printf(" (%d already kept)", dupes)
+	}
+	fmt.Printf(", total %d (view: 'results kept', clear: 'results clear')\n", keptCount())
 }
 
 // guessAt reads 8 bytes at addr (so guessType can sniff pointers/f64/i64 even
@@ -937,6 +970,7 @@ func showResults(n int, sortBy string, guess bool, gFilter string, gThresh float
 		if len(rows) < n && examined < total {
 			fmt.Println("stopped at the examine cap; use 'next' to narrow results first")
 		}
+		reportKeptAppend(rows, gFilter)
 		return
 	}
 
