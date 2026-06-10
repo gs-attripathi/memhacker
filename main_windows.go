@@ -287,7 +287,7 @@ SCANNING                        (default type: f32, default scope: writable priv
     (default 0.5), sorted by confidence; types: f32 f64 i32 i64 i8 ptr zero
     kept list is disk-backed (memhacker_results.bin next to the exe), accumulates
     across scans, survives 'reset' and app restarts; entries remember their type
-  results kept [n]              - show more of the kept list
+  results kept [n|range|list]   - show more of the kept list (e.g. kept 50, kept 40-50)
   results clear                 - clear the kept list (the ONLY thing that clears it)
     e.g: results 20 val         - top 20 of scan set sorted by value (-> kept)
          results 1-5            - scan set rows #1 to #5 (-> kept)
@@ -787,9 +787,15 @@ func cmdResults(args []string) {
 			fmt.Println("Kept results cleared")
 			return
 		case "kept", "k":
+			if len(args) > 1 && (strings.Contains(args[1], "-") || strings.Contains(args[1], ",")) {
+				showKeptIndices(parseIndexSpec(args[1]))
+				return
+			}
 			n := 20
 			if len(args) > 1 {
-				n, _ = strconv.Atoi(args[1])
+				if v, err := strconv.Atoi(args[1]); err == nil && v > 0 {
+					n = v
+				}
 			}
 			showKeptResults(n)
 			return

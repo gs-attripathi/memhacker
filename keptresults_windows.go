@@ -188,31 +188,66 @@ func keptValueString(r keptRec) string {
 	return decodeValue(r.dt, buf)
 }
 
+func keptHeader() {
+	fmt.Printf("%-5s  %-20s  %-18s  %-8s  %s\n", "#", "Address", "Value", "Type", "Conf.")
+	fmt.Println(strings.Repeat("-", 65))
+}
+
+func printKeptRow(idx int, r keptRec) {
+	typ := r.gname
+	conf := fmt.Sprintf("%.2f", r.conf)
+	if typ == "" {
+		typ = dataTypeName(r.dt)
+		conf = "-"
+	}
+	fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %s\n", idx, r.addr, keptValueString(r), typ, conf)
+}
+
+func keptEmptyMsg() {
+	fmt.Println("Kept results list is empty.")
+	fmt.Println("Any 'results <n|range>' selection appends its rows here; 'results clear' empties it.")
+}
+
 func showKeptResults(n int) {
 	total := keptCount()
 	if total == 0 {
-		fmt.Println("Kept results list is empty.")
-		fmt.Println("Any 'results <n|range>' selection appends its rows here; 'results clear' empties it.")
+		keptEmptyMsg()
 		return
 	}
 	if n > total {
 		n = total
 	}
 	recs := keptRead(0, n)
-	fmt.Printf("%-5s  %-20s  %-18s  %-8s  %s\n", "#", "Address", "Value", "Type", "Conf.")
-	fmt.Println(strings.Repeat("-", 65))
+	keptHeader()
 	for i, r := range recs {
-		typ := r.gname
-		conf := fmt.Sprintf("%.2f", r.conf)
-		if typ == "" {
-			typ = dataTypeName(r.dt)
-			conf = "-"
-		}
-		fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %s\n", i+1, r.addr, keptValueString(r), typ, conf)
+		printKeptRow(i+1, r)
 	}
 	fmt.Printf("Kept total: %d", total)
 	if total > n {
 		fmt.Printf(" (showing %d, use 'results kept <N>' for more)", n)
 	}
 	fmt.Println()
+}
+
+// showKeptIndices shows specific kept entries by 1-based index (range/list form).
+func showKeptIndices(indices []int) {
+	total := keptCount()
+	if total == 0 {
+		keptEmptyMsg()
+		return
+	}
+	keptHeader()
+	shown := 0
+	for _, idx := range indices {
+		if idx < 1 || idx > total {
+			continue
+		}
+		recs := keptRead(idx-1, 1)
+		if len(recs) == 0 {
+			continue
+		}
+		printKeptRow(idx, recs[0])
+		shown++
+	}
+	fmt.Printf("Shown %d of kept total %d\n", shown, total)
 }

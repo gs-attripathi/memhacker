@@ -299,7 +299,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.18.0-alpha | `results` semantics revamp: bare `results` now shows the kept list (the curated set), not the scan set. EVERY explicit selection (`results 50`, `results 100-200`, `results 1,3,5`, with or without guess filters) displays scan-set rows AND appends them to the kept list (deduped). Plain rows are kept with the active data type, guessed rows with their guessed type (record format: addr/conf/guessCode/dt). Auto-display after scan/next stays display-only. |
 
-Current: **v2.18.0-alpha** (AppVersion in `logger.go`)
+| v2.19.0-alpha | `results kept` accepts range/list index specs (`results kept 40-50`, `results kept 1,5,9`) in addition to a count. Bad count args no longer collapse to 0 rows. |
+
+Current: **v2.19.0-alpha** (AppVersion in `logger.go`)
 
 ---
 
