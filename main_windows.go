@@ -290,14 +290,18 @@ SCANNING                        (default type: f32, default scope: writable priv
   survives new scans / reset / app restarts; entries remember their type
   results add <n|range|list> [g <type> [minconf]]
                                 - copy scan rows into the result set (deduped)
-  results view [n|range|list] [addr|val]  (alias: results v)
-                                - inspect the result set, any group, any sort
+  results view [n|range|list] [addr|val|conf] [guess|g [type] [minconf]]
+                                (alias: results v) - inspect the result set
+    sort: addr=address, val=value, conf=captured confidence (desc)
+    guess: live-guess each entry (adds Guess+GConf cols); with a type it
+    filters (default: whole set examined, sorted by live confidence)
   results write <idx|range> <val>  (alias: results w) - write via entry's type
   results freeze <idx|range> <val> (alias: results f) - freeze entries
   results remove <idx|range>       (alias: results rm) - remove entries
   results clear                 - empty the result set (the ONLY thing that does)
     e.g: results add 50            results add 1-400 g i8 0.7
-         results view 40-50 val    results write 3 999
+         results view 40-50 val    results view g f32 0.7
+         results view 100 conf     results write 3 999
   reset                         - clear scan results (Ctrl+C during scan also clears)
 
 VALUE OPS

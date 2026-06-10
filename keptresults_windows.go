@@ -351,7 +351,8 @@ func cmdResultsAdd(args []string) {
 }
 
 // cmdResultsView shows result-set entries with live values.
-// results view [count|range|list] [addr|val]
+// results view [count|range|list] [addr|val|conf] [guess|g [type] [minconf]]
+// guess re-runs the live type heuristic on each entry; with a type it filters.
 func cmdResultsView(args []string) {
 	total := keptCount()
 	if total == 0 {
@@ -360,20 +361,43 @@ func cmdResultsView(args []string) {
 	}
 	sortBy := ""
 	sel := ""
-	for _, a := range args {
-		switch strings.ToLower(a) {
+	guess := false
+	gFilter := ""
+	gThresh := 0.5
+	for i := 0; i < len(args); i++ {
+		switch strings.ToLower(args[i]) {
 		case "addr", "address":
 			sortBy = "addr"
 		case "val", "value":
 			sortBy = "val"
+		case "conf", "confidence":
+			sortBy = "conf"
+		case "guess", "g":
+			guess = true
+			if i+1 < len(args) && validGuessTypes[strings.ToLower(args[i+1])] {
+				gFilter = strings.ToLower(args[i+1])
+				i++
+				if i+1 < len(args) {
+					if t, err := strconv.ParseFloat(args[i+1], 64); err == nil && t > 0 && t <= 1 {
+						gThresh = t
+						i++
+					}
+				}
+			}
 		default:
 			if sel == "" {
-				sel = a
+				sel = args[i]
 			}
 		}
 	}
 	if sel == "" {
-		sel = "20"
+		// Default: first 20; with a guess filter, examine the whole set since
+		// the result set is curated and the user wants all matches.
+		if gFilter != "" {
+			sel = strconv.Itoa(total)
+		} else {
+			sel = "20"
+		}
 	}
 	idxs := resolveSelection(sel, total)
 	if idxs == nil {
@@ -382,9 +406,11 @@ func cmdResultsView(args []string) {
 	}
 
 	type disp struct {
-		idx int
-		rec keptRec
-		val string
+		idx   int
+		rec   keptRec
+		val   string
+		gl    string
+		gconf float64
 	}
 	var rows []disp
 	for _, idx := range idxs {
@@ -392,17 +418,35 @@ func cmdResultsView(args []string) {
 		if len(recs) == 0 {
 			continue
 		}
-		rows = append(rows, disp{idx, recs[0], keptValueString(recs[0])})
+		r := recs[0]
+		var gl, name string
+		var gconf float64
+		if guess {
+			gl, name, gconf = guessAt(r.addr)
+			if gFilter != "" && (name != gFilter || gconf < gThresh) {
+				continue
+			}
+		}
+		rows = append(rows, disp{idx, r, keptValueString(r), gl, gconf})
 	}
-	switch sortBy {
-	case "addr":
+	switch {
+	case sortBy == "addr":
 		sort.Slice(rows, func(i, j int) bool { return rows[i].rec.addr < rows[j].rec.addr })
-	case "val":
+	case sortBy == "val":
 		sort.Slice(rows, func(i, j int) bool { return rows[i].val < rows[j].val })
+	case sortBy == "conf":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].rec.conf > rows[j].rec.conf })
+	case gFilter != "":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].gconf > rows[j].gconf })
 	}
 
-	fmt.Printf("%-5s  %-20s  %-18s  %-8s  %s\n", "#", "Address", "Value", "Type", "Conf.")
-	fmt.Println(strings.Repeat("-", 65))
+	if guess {
+		fmt.Printf("%-5s  %-20s  %-18s  %-8s  %-6s  %-12s  %s\n", "#", "Address", "Value", "Type", "Conf.", "Guess", "GConf.")
+		fmt.Println(strings.Repeat("-", 85))
+	} else {
+		fmt.Printf("%-5s  %-20s  %-18s  %-8s  %s\n", "#", "Address", "Value", "Type", "Conf.")
+		fmt.Println(strings.Repeat("-", 65))
+	}
 	for _, d := range rows {
 		typ := d.rec.gname
 		conf := fmt.Sprintf("%.2f", d.rec.conf)
@@ -410,7 +454,14 @@ func cmdResultsView(args []string) {
 			typ = dataTypeName(d.rec.dt)
 			conf = "-"
 		}
-		fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %s\n", d.idx, d.rec.addr, d.val, typ, conf)
+		if guess {
+			fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %-6s  %-12s  %.2f\n", d.idx, d.rec.addr, d.val, typ, conf, d.gl, d.gconf)
+		} else {
+			fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %s\n", d.idx, d.rec.addr, d.val, typ, conf)
+		}
+	}
+	if gFilter != "" {
+		fmt.Printf("%d match(es) live-guessed as %s with conf >= %.2f, of %d examined\n", len(rows), gFilter, gThresh, len(idxs))
 	}
 	fmt.Printf("Shown %d of result set total %d\n", len(rows), total)
 }

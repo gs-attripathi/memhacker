@@ -303,7 +303,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.20.0-alpha | Result set becomes a first-class second set with explicit verbs. Bare `results` is back to a pure scan-set view (no side effects, no auto-ingestion). New subcommands: `results add <n|range|list> [g type [conf]]` copies scan rows in (deduped), `results view` (alias `v`) inspects with sort, `results write`/`freeze` (aliases `w`/`f`) act on entries via their captured type, `results remove` (alias `rm`) prunes, `results clear` empties. `kept` keyword removed. |
 
-Current: **v2.20.0-alpha** (AppVersion in `logger.go`)
+| v2.21.0-alpha | `results view` gains guess-based filtering and richer sorting. `guess`/`g [type] [minconf]` live-guesses each entry (Guess + GConf columns); with a type it filters to matches, examining the whole set by default, sorted by live confidence. New `conf` sort keyword (captured confidence, descending) alongside `addr`/`val`. |
+
+Current: **v2.21.0-alpha** (AppVersion in `logger.go`)
 
 ---
 
