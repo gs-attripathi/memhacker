@@ -200,6 +200,10 @@ Repeats until no more known subdirs remain. Handles both `game\bin\` (1 level) a
 
 7. **NextScan partial read** — 64KB batch reads now clamped to memory region boundary via QueryRegion.
 
+8. **firstScanUnknown leaking disk results** (fixed v2.15.0): clearDiskRes only ran on the non-unknown FirstScan path, so repeated `scan unknown` leaked GB-scale scan_N.addr/.vals files AND left a stale diskRes that misrouted a later `next` to the old result files. FirstScan now clears snapshot, diskRes, and Results up front for every scan type.
+
+9. **nextScanFromSnapshot unbounded RAM** (fixed v2.15.0): survivors of the first `next` after `scan unknown` were collected into one RAM slice with no disk spill, causing multi-GB spikes and system-wide lag. Now spills to disk above diskResThreshold exactly like FirstScan. Also: FirstScan/NextScan now call debug.FreeOSMemory() on exit so the heap high-water mark is returned to Windows, and main() sweeps memhacker_scans/ at startup to remove temp files left by crashed sessions.
+
 ---
 
 ## Workflow (user perspective)
@@ -286,7 +290,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 | v2.13.0-alpha | New `pscan` 6th positional arg `maxAddrsPerHop` — caps non-static recursions per shared hop value. Targets the UE5/Unity case where one hop value has hundreds of addresses (pool arrays). Static-base hits remain uncapped — they're the actual chain endpoints. Default 0 = unlimited (no behaviour change). Try 16-32 on depth 6/7 scans. Applied symmetrically in positive and negative offset passes. |
 | v2.14.0-alpha | `pscan` now prints the resolved settings and asks y/n before running. `n` walks each field one-by-one with the current value in `[brackets]` — blank input keeps current. Loops until y is given so corrections can be made iteratively. Solves the "what does `pscan 6 8192 100 exe 5 16` even mean" problem without forcing named-arg syntax. |
 
-Current: **v2.14.0-alpha** (AppVersion in `logger.go`)
+| v2.15.0-alpha | Memory/lag fix for repeated `scan unknown` in one session. FirstScan clears diskRes and Results up front (unknown path was leaking GB-scale result files and misrouting later `next` scans via stale diskRes). nextScanFromSnapshot spills survivors to disk above 1M like FirstScan (was unbounded RAM, multi-GB spikes). FirstScan/NextScan release freed heap to the OS via debug.FreeOSMemory. Startup sweep of memhacker_scans/ removes temp files left by crashed sessions. |
+
+Current: **v2.15.0-alpha** (AppVersion in `logger.go`)
 
 ---
 

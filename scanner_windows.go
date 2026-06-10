@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -377,8 +378,17 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		atomic.StoreInt32(&scanActive, 0)
 		atomic.StoreInt32(&scanCancelFlag, 0)
 	}()
+	// Return freed heap to the OS after every scan. Go releases pages lazily,
+	// so without this each multi-GB scan keeps its high-water mark committed
+	// and repeated scans in one session starve the rest of the system.
+	defer debug.FreeOSMemory()
 
+	// Clear ALL previous scan state up front. clearDiskRes used to run only on
+	// the non-unknown path, so repeated unknown scans leaked GB-scale result
+	// files and left a stale diskRes that misrouted later next scans.
 	ms.clearSnapshot()
+	ms.clearDiskRes()
+	ms.Results = nil
 
 	// Unknown scan: snapshot entire memory to disk instead of storing per-address results.
 	// CE does this via TScanFileWriter with async dual-buffer writes.
@@ -588,7 +598,6 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 		}
 	}()
 
-	ms.clearDiskRes()
 	var all []ScanResult
 	var diskW *diskWriter
 	sz2 := sz // capture for closure
@@ -871,12 +880,48 @@ func (ms *MemoryScanner) nextScanFromSnapshot(params ScanParams) int {
 	}
 	go func() { wg.Wait(); close(resultCh) }()
 
+	// Spill to disk above threshold, same as FirstScan. A next after an unknown
+	// scan can keep tens of millions of survivors; holding them all in one RAM
+	// slice was causing multi-GB spikes and system-wide lag.
 	var all []ScanResult
+	var diskW *diskWriter
 	for r := range resultCh {
-		all = append(all, r.results...)
+		batch := r.results
+		if diskW == nil && len(all)+len(batch) > diskResThreshold {
+			var werr error
+			diskW, werr = newDiskWriter(sz)
+			if werr != nil {
+				Log.Warn("disk result fallback failed: %v, staying in RAM", werr)
+			} else {
+				for _, x := range all { diskW.append(x.Address, x.Value) }
+				all = nil
+			}
+		}
+		if diskW != nil {
+			for _, x := range batch { diskW.append(x.Address, x.Value) }
+		} else {
+			all = append(all, batch...)
+		}
 	}
 	close(doneCh2)
 	fmt.Println()
+
+	if diskW != nil {
+		diskW.flush()
+		dr, err := diskW.toDiskResultSet()
+		if err != nil {
+			Log.Error("failed to open disk result set: %v", err)
+			ms.Results = nil
+			return 0
+		}
+		ms.diskRes = dr
+		ms.Results = nil
+		fmt.Printf("  %d results stored in %s + %s\n", dr.count,
+			filepath.Base(diskW.addrPath), filepath.Base(diskW.valPath))
+		Log.Info("nextScanFromSnapshot: %d results on disk", dr.count)
+		return dr.count
+	}
+
 	ms.Results = all
 	Log.Info("nextScanFromSnapshot: %d results", len(all))
 	return len(all)
@@ -1016,6 +1061,7 @@ func (ms *MemoryScanner) nextScanDisk(params ScanParams) int {
 }
 
 func (ms *MemoryScanner) NextScan(params ScanParams) int {
+	defer debug.FreeOSMemory() // see FirstScan: release heap back to the OS
 	// Route to appropriate NextScan implementation
 	if ms.snapshot != nil {
 		return ms.nextScanFromSnapshot(params)

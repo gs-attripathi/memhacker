@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,6 +55,11 @@ func main() {
 		defer Log.Close()
 		fmt.Printf("Logging to: %s\n", logPath)
 	}
+
+	// Sweep scan temp files left by prior sessions (a crash or closed console
+	// leaves snapshot.snap and scan_N.addr/.vals behind, which can be GBs).
+	// The dir only ever holds these temp files, so removing it wholesale is safe.
+	os.RemoveAll(filepath.Join(exeDir(), "memhacker_scans"))
 
 	// Ctrl+C: cancel active scan/pscan (returns to prompt) or exit if neither running
 	sigCh := make(chan os.Signal, 1)
