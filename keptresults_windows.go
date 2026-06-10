@@ -11,16 +11,20 @@ import (
 	"strings"
 )
 
-// Disk-backed kept-results store. Every guess-filtered `results` invocation
-// appends its matches here, accumulating across scans. Nothing is held in RAM:
-// appends stream to the file, views read back a window on demand.
-// Cleared only by `results clear`. Lives next to the exe (NOT in the swept
-// memhacker_scans dir) so it survives app restarts; entries go stale when the
-// game restarts, so clear it then.
+// Disk-backed kept-results store: the user's curated working set.
+// Every explicit `results <selection>` invocation appends the rows it displayed
+// (after any guess filter), deduped by address. Nothing is held in RAM: appends
+// stream to the file, views read back a window on demand.
+// Bare `results` and `results kept [n]` view it; `results clear` is the ONLY
+// thing that clears it. Lives next to the exe (NOT in the swept memhacker_scans
+// dir) so it survives app restarts; entries go stale when the game restarts.
 //
-// Record layout (16 bytes): addr u64 | conf f32 | type byte | 3 pad
+// Record layout (16 bytes): addr u64 | conf f32 | guessCode u8 | dt u8 | 2 pad
+// guessCode indexes keptTypeNames when the row came from a guess; 255 = not
+// guessed, in which case dt (a DataType) says how to decode the value.
 
 const keptRecSize = 16
+const keptNoGuess = 255
 
 var keptTypeNames = []string{"f32", "f64", "i32", "i64", "i8", "ptr", "zero", "?"}
 
@@ -30,14 +34,33 @@ func keptTypeByte(name string) byte {
 			return byte(i)
 		}
 	}
-	return byte(len(keptTypeNames) - 1)
+	return keptNoGuess
 }
 
 func keptTypeName(b byte) string {
 	if int(b) < len(keptTypeNames) {
 		return keptTypeNames[b]
 	}
-	return "?"
+	return ""
+}
+
+// guessNameDT maps a guess label to the DataType used to decode the value.
+func guessNameDT(name string) DataType {
+	switch name {
+	case "f32":
+		return TypeFloat32
+	case "f64":
+		return TypeFloat64
+	case "i32":
+		return TypeInt32
+	case "i64":
+		return TypeInt64
+	case "i8":
+		return TypeInt8
+	case "ptr":
+		return TypeUInt64
+	}
+	return currentDT
 }
 
 func keptPath() string {
@@ -53,9 +76,10 @@ func keptCount() int {
 }
 
 type keptRec struct {
-	addr uintptr
-	conf float64
-	typ  string
+	addr  uintptr
+	conf  float64
+	gname string   // guess label, "" if the row wasn't guessed
+	dt    DataType // how to decode the value
 }
 
 // keptAddrSet streams every stored address into a transient set for dedupe.
@@ -80,7 +104,9 @@ func keptAddrSet() map[uintptr]bool {
 }
 
 // keptAppend appends rows to the store, skipping already-stored addresses.
-func keptAppend(rows []resultRow, typeName string) (added, dupes int) {
+// Guessed rows record their guess label + confidence; plain rows record the
+// data type that was active when they were displayed.
+func keptAppend(rows []resultRow) (added, dupes int) {
 	if len(rows) == 0 {
 		return 0, 0
 	}
@@ -100,8 +126,14 @@ func keptAppend(rows []resultRow, typeName string) (added, dupes int) {
 		seen[r.addr] = true
 		binary.LittleEndian.PutUint64(rec[0:], uint64(r.addr))
 		binary.LittleEndian.PutUint32(rec[8:], math.Float32bits(float32(r.conf)))
-		rec[12] = keptTypeByte(typeName)
-		rec[13], rec[14], rec[15] = 0, 0, 0
+		if r.gname != "" {
+			rec[12] = keptTypeByte(r.gname)
+			rec[13] = byte(guessNameDT(r.gname))
+		} else {
+			rec[12] = keptNoGuess
+			rec[13] = byte(currentDT)
+		}
+		rec[14], rec[15] = 0, 0
 		f.Write(rec[:])
 		added++
 	}
@@ -120,9 +152,10 @@ func keptRead(start, n int) []keptRec {
 	recs := make([]keptRec, 0, nr/keptRecSize)
 	for off := 0; off+keptRecSize <= nr; off += keptRecSize {
 		recs = append(recs, keptRec{
-			addr: uintptr(binary.LittleEndian.Uint64(buf[off:])),
-			conf: float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[off+8:]))),
-			typ:  keptTypeName(buf[off+12]),
+			addr:  uintptr(binary.LittleEndian.Uint64(buf[off:])),
+			conf:  float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[off+8:]))),
+			gname: keptTypeName(buf[off+12]),
+			dt:    DataType(buf[off+13]),
 		})
 	}
 	return recs
@@ -135,55 +168,51 @@ func keptClear() {
 }
 
 // keptValueString reads the live value at the record's address, decoded as the
-// type it was guessed as when kept (not the current `type` setting).
+// type it was captured with (guessed type or the data type active at capture).
 func keptValueString(r keptRec) string {
 	if currentHandle == 0 {
 		return "?"
 	}
-	if r.typ == "ptr" {
+	if r.gname == "ptr" {
 		buf, err := ReadMemory(currentHandle, r.addr, 8)
 		if err != nil || len(buf) < 8 {
 			return "?"
 		}
 		return fmt.Sprintf("0x%X", binary.LittleEndian.Uint64(buf))
 	}
-	dt := currentDT
-	switch r.typ {
-	case "f32":
-		dt = TypeFloat32
-	case "f64":
-		dt = TypeFloat64
-	case "i32":
-		dt = TypeInt32
-	case "i64":
-		dt = TypeInt64
-	case "i8":
-		dt = TypeInt8
-	}
-	sz := dataTypeSize(dt)
+	sz := dataTypeSize(r.dt)
 	buf, err := ReadMemory(currentHandle, r.addr, sz)
 	if err != nil || len(buf) < sz {
 		return "?"
 	}
-	return decodeValue(dt, buf)
+	return decodeValue(r.dt, buf)
 }
 
 func showKeptResults(n int) {
 	total := keptCount()
 	if total == 0 {
-		fmt.Println("No kept results. Use 'results <n|range> guess <type> [minconf]' to collect some.")
+		fmt.Println("Kept results list is empty.")
+		fmt.Println("Any 'results <n|range>' selection appends its rows here; 'results clear' empties it.")
 		return
 	}
 	if n > total {
 		n = total
 	}
 	recs := keptRead(0, n)
-	fmt.Printf("%-5s  %-20s  %-18s  %-6s  %s\n", "#", "Address", "Value", "Type", "Conf.")
+	fmt.Printf("%-5s  %-20s  %-18s  %-8s  %s\n", "#", "Address", "Value", "Type", "Conf.")
 	fmt.Println(strings.Repeat("-", 65))
 	for i, r := range recs {
-		fmt.Printf("%-5d  0x%-18X  %-18s  %-6s  %.2f\n", i+1, r.addr, keptValueString(r), r.typ, r.conf)
+		typ := r.gname
+		conf := fmt.Sprintf("%.2f", r.conf)
+		if typ == "" {
+			typ = dataTypeName(r.dt)
+			conf = "-"
+		}
+		fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %s\n", i+1, r.addr, keptValueString(r), typ, conf)
 	}
+	fmt.Printf("Kept total: %d", total)
 	if total > n {
-		fmt.Printf("... and %d more (use 'results kept <N>')\n", total-n)
+		fmt.Printf(" (showing %d, use 'results kept <N>' for more)", n)
 	}
+	fmt.Println()
 }

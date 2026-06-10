@@ -71,9 +71,10 @@ Scans **writable private memory only** by default (game values are always here).
 | `scan decby <val>` | Decreased by exactly this amount |
 | `scan notequal <val>` | Not equal to value |
 | `next <type> [val]` (alias `n`) | Filter existing results (same types as scan) |
-| `results [N] [addr\|val] [guess\|g [type] [minconf]]` (alias `r`) | Show top N results with live values (default 20). Optional `addr` / `val` sorts the displayed rows. Optional `guess` (or `g`) adds Guess + Confidence columns — same heuristic as `look`, picks the most likely type per address (f32 / f64 / i32 / i64 / i8 / ptr / zero) regardless of the active `type`. Costs one 8-byte read per displayed row — keep N small for big result sets. Range / list also supported: `results 1-5 guess`, `results 1,3,5 val g`. **Guess type filter:** follow `guess`/`g` with a type name to keep only rows guessed as that type with confidence >= minconf (default 0.5), sorted by confidence descending, e.g. `results 20 guess f32` or `results 1-400 g i8 0.7`. Walks results from the start until N matches are found (caps at examining 100K rows; narrow with `next` first on huge sets). Every filtered match is also appended to the disk-backed kept list (see below). |
-| `results kept [n]` | Show the kept list: every guess-filtered match ever collected, deduped by address, with live values decoded as each entry's guessed type. Stored on disk only (`memhacker_results.bin` next to the exe), never in RAM. Accumulates across scans and survives `reset` and app restarts; entries go stale after a game restart, so clear it then. |
-| `results clear` | Clear the kept list (deletes `memhacker_results.bin`). The only way it's ever cleared; new scans and `reset` don't touch it. |
+| `results` (alias `r`) | Show the **kept list**: your curated working set, built up from every explicit `results <selection>` you run. Disk-backed only (`memhacker_results.bin` next to the exe), never in RAM. Accumulates across scans and survives `reset` and app restarts; entries go stale after a game restart, so clear it then. Each entry shows a live value decoded as the type it was captured with. |
+| `results <N\|range\|list> [addr\|val] [guess\|g [type] [minconf]]` | Show rows from the **scan set**, and append every displayed row to the kept list (deduped by address). `results 50` shows the top 50, `results 100-200` / `results 1,3,5` select by index. Optional `addr` / `val` sorts the displayed rows. Optional `guess` (or `g`) adds Guess + Confidence columns, same heuristic as `look` (f32 / f64 / i32 / i64 / i8 / ptr / zero); guessed rows are kept with their guessed type, plain rows with the active `type`. **Guess type filter:** follow `guess`/`g` with a type name to keep only rows guessed as that type with confidence >= minconf (default 0.5), sorted by confidence descending, e.g. `results 20 guess f32` or `results 1-400 g i8 0.7`. The count form walks from the start until N matches are found (caps at examining 100K rows; narrow with `next` first on huge sets). |
+| `results kept [n]` | Show more of the kept list (bare `results` shows the first 20). |
+| `results clear` | Clear the kept list (deletes `memhacker_results.bin`). The ONLY thing that clears it; new scans and `reset` don't touch it. |
 | `reset` | Clear scan results |
 
 **Optional scan keywords** (append to any scan command):
@@ -233,7 +234,7 @@ open game.exe
 scan exact 100        <- find HP (default type is f32)
 next decreased        <- take damage in game, filter
 next decreased        <- take more damage
-results               <- narrow down to 1-2 addresses
+results 20            <- view top rows (also adds them to the kept list)
 write 0xADDR 999      <- or use iwrite 1 999
 ```
 
@@ -245,7 +246,7 @@ scan unknown          <- snapshots all memory to disk
                       <- do something in game (take damage, gain gold, etc.)
 next changed          <- filter to addresses that changed
 next changed          <- filter again
-results
+results 20
 ```
 
 ### Find a stable pointer chain (do once per game)

@@ -279,20 +279,22 @@ SCANNING                        (default type: f32, default scope: writable priv
          scan exact 100 range 0x1000000 0x2000000
          scan between -0.01 0.01 all
   next <type> [value]           (alias: n) - filter existing results (same types as scan)
-  results [n] [addr|val] [guess|g [type] [minconf]]  (alias: r) - show top N results
-  results <range|list> [addr|val] [guess|g [type] [minconf]]   - show specific results by index
+  results                       (alias: r) - show the kept list (your curated set)
+  results <n|range|list> [addr|val] [guess|g [type] [minconf]]
+                                - show rows from the scan set; every displayed row
+                                  is ALSO appended to the kept list (deduped)
     guess type filter: keep only rows guessed as <type> with confidence >= minconf
     (default 0.5), sorted by confidence; types: f32 f64 i32 i64 i8 ptr zero
-    filtered matches are APPENDED to a disk-backed kept list (deduped by address);
-    the kept list accumulates across scans and survives 'reset' and app restarts
-  results kept [n]              - show the kept list (live values, per-entry type)
-  results clear                 - clear the kept list (memhacker_results.bin)
-    e.g: results 20 val         - top 20 sorted by value
-         results 1-5            - show results #1 to #5
-         results 1,3,5 addr     - show #1,#3,#5 sorted by address
-         results 50 guess       - top 50 with auto-guessed type column (1 extra read per row)
-         results 20 guess f32   - first 20 guessed as f32 (conf >= 0.5), kept to disk
-         results 1-400 g i8 0.7 - i8 matches in #1-400 with conf >= 0.7, kept to disk
+    kept list is disk-backed (memhacker_results.bin next to the exe), accumulates
+    across scans, survives 'reset' and app restarts; entries remember their type
+  results kept [n]              - show more of the kept list
+  results clear                 - clear the kept list (the ONLY thing that clears it)
+    e.g: results 20 val         - top 20 of scan set sorted by value (-> kept)
+         results 1-5            - scan set rows #1 to #5 (-> kept)
+         results 1,3,5 addr     - #1,#3,#5 sorted by address (-> kept)
+         results 50 guess       - top 50 with auto-guessed type column (-> kept)
+         results 20 guess f32   - first 20 guessed as f32, conf >= 0.5 (-> kept)
+         results 1-400 g i8 0.7 - i8 matches in #1-400, conf >= 0.7 (-> kept)
   reset                         - clear scan results (Ctrl+C during scan also clears)
 
 VALUE OPS
@@ -736,9 +738,9 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("Found %d results in %v\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20, "", false, "", 0)
+		showResults(20, "", false, "", 0, false)
 	} else if count > 20 {
-		showResults(10, "", false, "", 0)
+		showResults(10, "", false, "", 0, false)
 	}
 }
 
@@ -770,9 +772,9 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("%d results remaining (%v)\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20, "", false, "", 0)
+		showResults(20, "", false, "", 0, false)
 	} else if count > 20 {
-		showResults(10, "", false, "", 0)
+		showResults(10, "", false, "", 0, false)
 	}
 }
 
@@ -792,6 +794,13 @@ func cmdResults(args []string) {
 			showKeptResults(n)
 			return
 		}
+	}
+
+	// Bare `results` shows the kept list (the curated set), not the scan set.
+	// Scan-set rows are viewed (and thereby kept) via explicit selections.
+	if len(args) == 0 {
+		showKeptResults(20)
+		return
 	}
 
 	if scanner == nil || scanner.totalResults() == 0 {
@@ -838,29 +847,28 @@ func cmdResults(args []string) {
 		for _, idx := range indices {
 			if idx < 1 || idx > scanner.totalResults() { continue }
 			addr, _ := scanner.getResult(idx - 1)
-			var gl string
+			var gl, name string
 			var conf float64
 			if guess {
-				var name string
 				gl, name, conf = guessAt(addr)
 				if gFilter != "" && (name != gFilter || conf < gThresh) { continue }
 			}
 			val, err := scanner.ReadCurrentValue(addr, currentDT)
 			if err != nil { val = "?" }
-			rows = append(rows, resultRow{idx, addr, val, gl, conf})
+			rows = append(rows, resultRow{idx, addr, val, gl, name, conf})
 		}
 		sortResultRows(rows, sortBy, gFilter != "")
 		printResultRows(rows, guess)
 		if gFilter != "" {
 			fmt.Printf("%d match(es) guessed as %s with conf >= %.2f\n", len(rows), gFilter, gThresh)
-			reportKeptAppend(rows, gFilter)
 		}
+		reportKeptAppend(rows)
 		return
 	}
 
 	n := 20
 	if len(args) > 0 { n, _ = strconv.Atoi(args[0]) }
-	showResults(n, sortBy, guess, gFilter, gThresh)
+	showResults(n, sortBy, guess, gFilter, gThresh, true)
 }
 
 // validGuessTypes — labels guessType can produce, accepted as a filter after guess/g.
@@ -870,11 +878,12 @@ var validGuessTypes = map[string]bool{
 }
 
 type resultRow struct {
-	idx  int
-	addr uintptr
-	val  string
-	gl   string
-	conf float64
+	idx   int
+	addr  uintptr
+	val   string
+	gl    string  // guess display label ("f32", "ptr → 0x..", ...)
+	gname string  // bare guess type name, "" if row wasn't guessed
+	conf  float64
 }
 
 // sortResultRows orders rows by explicit sort key, or by confidence descending
@@ -907,15 +916,15 @@ func printResultRows(rows []resultRow, guess bool) {
 	}
 }
 
-// reportKeptAppend appends guess-filtered rows to the disk-backed kept store
+// reportKeptAppend appends displayed rows to the disk-backed kept store
 // and prints what changed.
-func reportKeptAppend(rows []resultRow, gFilter string) {
-	added, dupes := keptAppend(rows, gFilter)
+func reportKeptAppend(rows []resultRow) {
+	added, dupes := keptAppend(rows)
 	fmt.Printf("kept: +%d new", added)
 	if dupes > 0 {
 		fmt.Printf(" (%d already kept)", dupes)
 	}
-	fmt.Printf(", total %d (view: 'results kept', clear: 'results clear')\n", keptCount())
+	fmt.Printf(", total %d (view: 'results', clear: 'results clear')\n", keptCount())
 }
 
 // guessAt reads 8 bytes at addr (so guessType can sniff pointers/f64/i64 even
@@ -937,7 +946,7 @@ func guessAt(addr uintptr) (string, string, float64) {
 	return label, g.name, g.confidence
 }
 
-func showResults(n int, sortBy string, guess bool, gFilter string, gThresh float64) {
+func showResults(n int, sortBy string, guess bool, gFilter string, gThresh float64, ingest bool) {
 	if scanner == nil || scanner.totalResults() == 0 {
 		fmt.Println("No results")
 		return
@@ -961,7 +970,7 @@ func showResults(n int, sortBy string, guess bool, gFilter string, gThresh float
 			if name != gFilter || conf < gThresh { continue }
 			val, err := scanner.ReadCurrentValue(addr, currentDT)
 			if err != nil { val = "?" }
-			rows = append(rows, resultRow{i + 1, addr, val, gl, conf})
+			rows = append(rows, resultRow{i + 1, addr, val, gl, name, conf})
 		}
 		sortResultRows(rows, sortBy, true)
 		printResultRows(rows, true)
@@ -970,7 +979,9 @@ func showResults(n int, sortBy string, guess bool, gFilter string, gThresh float
 		if len(rows) < n && examined < total {
 			fmt.Println("stopped at the examine cap; use 'next' to narrow results first")
 		}
-		reportKeptAppend(rows, gFilter)
+		if ingest {
+			reportKeptAppend(rows)
+		}
 		return
 	}
 
@@ -980,17 +991,20 @@ func showResults(n int, sortBy string, guess bool, gFilter string, gThresh float
 		addr, _ := scanner.getResult(i)
 		val, err := scanner.ReadCurrentValue(addr, currentDT)
 		if err != nil { val = "?" }
-		var gl string
+		var gl, name string
 		var conf float64
 		if guess {
-			gl, _, conf = guessAt(addr)
+			gl, name, conf = guessAt(addr)
 		}
-		rows[i] = resultRow{i + 1, addr, val, gl, conf}
+		rows[i] = resultRow{i + 1, addr, val, gl, name, conf}
 	}
 	sortResultRows(rows, sortBy, false)
 	printResultRows(rows, guess)
 	if total > n {
 		fmt.Printf("... and %d more (use 'results <N>' to show more)\n", total-n)
+	}
+	if ingest {
+		reportKeptAppend(rows)
 	}
 }
 

@@ -297,7 +297,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.17.0-alpha | Disk-backed kept-results store (`keptresults_windows.go`). Every guess-filtered `results` invocation appends its matches to `memhacker_results.bin` (16-byte records: addr/conf/type), deduped by address, never held in RAM. `results kept [n]` views it with live values decoded per entry's guessed type; `results clear` is the only thing that clears it (survives new scans, `reset`, and app restarts). |
 
-Current: **v2.17.0-alpha** (AppVersion in `logger.go`)
+| v2.18.0-alpha | `results` semantics revamp: bare `results` now shows the kept list (the curated set), not the scan set. EVERY explicit selection (`results 50`, `results 100-200`, `results 1,3,5`, with or without guess filters) displays scan-set rows AND appends them to the kept list (deduped). Plain rows are kept with the active data type, guessed rows with their guessed type (record format: addr/conf/guessCode/dt). Auto-display after scan/next stays display-only. |
+
+Current: **v2.18.0-alpha** (AppVersion in `logger.go`)
 
 ---
 
