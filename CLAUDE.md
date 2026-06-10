@@ -292,7 +292,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.15.0-alpha | Memory/lag fix for repeated `scan unknown` in one session. FirstScan clears diskRes and Results up front (unknown path was leaking GB-scale result files and misrouting later `next` scans via stale diskRes). nextScanFromSnapshot spills survivors to disk above 1M like FirstScan (was unbounded RAM, multi-GB spikes). FirstScan/NextScan release freed heap to the OS via debug.FreeOSMemory. Startup sweep of memhacker_scans/ removes temp files left by crashed sessions. |
 
-Current: **v2.15.0-alpha** (AppVersion in `logger.go`)
+| v2.16.0-alpha | `results` guess type filter: `results [n] guess <type> [minconf]` keeps only rows guessed as that type (f32/f64/i32/i64/i8/ptr/zero) with confidence >= minconf (default 0.5), sorted by confidence descending. Walks results until n matches or 100K rows examined. Works in range/list mode too. |
+
+Current: **v2.16.0-alpha** (AppVersion in `logger.go`)
 
 ---
 

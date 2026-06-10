@@ -279,12 +279,16 @@ SCANNING                        (default type: f32, default scope: writable priv
          scan exact 100 range 0x1000000 0x2000000
          scan between -0.01 0.01 all
   next <type> [value]           (alias: n) - filter existing results (same types as scan)
-  results [n] [addr|val] [guess|g]  (alias: r) - show top N results, optional sort, optional type-guess
-  results <range|list> [addr|val] [guess|g]    - show specific results by index
+  results [n] [addr|val] [guess|g [type] [minconf]]  (alias: r) - show top N results
+  results <range|list> [addr|val] [guess|g [type] [minconf]]   - show specific results by index
+    guess type filter: keep only rows guessed as <type> with confidence >= minconf
+    (default 0.5), sorted by confidence; types: f32 f64 i32 i64 i8 ptr zero
     e.g: results 20 val         - top 20 sorted by value
          results 1-5            - show results #1 to #5
          results 1,3,5 addr     - show #1,#3,#5 sorted by address
          results 50 guess       - top 50 with auto-guessed type column (1 extra read per row)
+         results 20 guess f32   - first 20 results guessed as f32 (conf >= 0.5)
+         results 20 g ptr 0.9   - same idea, pointers with conf >= 0.9
   reset                         - clear scan results (Ctrl+C during scan also clears)
 
 VALUE OPS
@@ -728,9 +732,9 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("Found %d results in %v\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20, "", false)
+		showResults(20, "", false, "", 0)
 	} else if count > 20 {
-		showResults(10, "", false)
+		showResults(10, "", false, "", 0)
 	}
 }
 
@@ -762,9 +766,9 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	elapsed := time.Since(start)
 	fmt.Printf("%d results remaining (%v)\n", count, elapsed)
 	if count > 0 && count <= 20 {
-		showResults(20, "", false)
+		showResults(20, "", false, "", 0)
 	} else if count > 20 {
-		showResults(10, "", false)
+		showResults(10, "", false, "", 0)
 	}
 }
 
@@ -774,20 +778,34 @@ func cmdResults(args []string) {
 		return
 	}
 
-	// Parse args: optional count/range, optional sort keyword, optional guess keyword
+	// Parse args: optional count/range, optional sort keyword, optional guess keyword.
+	// guess/g may be followed by a type name to filter (f32/f64/i32/i64/i8/ptr/zero)
+	// and optionally a min confidence (0..1, default 0.5).
 	sortBy := "" // "addr" or "val"
 	guess := false
+	gFilter := ""
+	gThresh := 0.5
 	filtered := args[:0:len(args)]
-	for _, a := range args {
-		switch strings.ToLower(a) {
+	for i := 0; i < len(args); i++ {
+		switch strings.ToLower(args[i]) {
 		case "addr", "address":
 			sortBy = "addr"
 		case "val", "value":
 			sortBy = "val"
 		case "guess", "g":
 			guess = true
+			if i+1 < len(args) && validGuessTypes[strings.ToLower(args[i+1])] {
+				gFilter = strings.ToLower(args[i+1])
+				i++
+				if i+1 < len(args) {
+					if t, err := strconv.ParseFloat(args[i+1], 64); err == nil && t > 0 && t <= 1 {
+						gThresh = t
+						i++
+					}
+				}
+			}
 		default:
-			filtered = append(filtered, a)
+			filtered = append(filtered, args[i])
 		}
 	}
 	args = filtered
@@ -795,83 +813,62 @@ func cmdResults(args []string) {
 	// Index range: results 1-5 or results 1,3,5
 	if len(args) > 0 && (strings.Contains(args[0], "-") || strings.Contains(args[0], ",")) {
 		indices := parseIndexSpec(args[0])
-		type row struct{ idx int; addr uintptr; val string }
-		var rows []row
+		var rows []resultRow
 		for _, idx := range indices {
 			if idx < 1 || idx > scanner.totalResults() { continue }
 			addr, _ := scanner.getResult(idx - 1)
+			var gl string
+			var conf float64
+			if guess {
+				var name string
+				gl, name, conf = guessAt(addr)
+				if gFilter != "" && (name != gFilter || conf < gThresh) { continue }
+			}
 			val, err := scanner.ReadCurrentValue(addr, currentDT)
 			if err != nil { val = "?" }
-			rows = append(rows, row{idx, addr, val})
+			rows = append(rows, resultRow{idx, addr, val, gl, conf})
 		}
-		if sortBy == "val" {
-			sort.Slice(rows, func(i, j int) bool { return rows[i].val < rows[j].val })
-		} else if sortBy == "addr" {
-			sort.Slice(rows, func(i, j int) bool { return rows[i].addr < rows[j].addr })
-		}
-		if guess {
-			fmt.Printf("%-5s  %-20s  %-18s  %-12s  %s\n", "#", "Address", "Value", "Guess", "Conf.")
-			fmt.Println(strings.Repeat("-", 75))
-		} else {
-			fmt.Printf("%-5s  %-20s  %s\n", "#", "Address", "Value")
-			fmt.Println(strings.Repeat("-", 45))
-		}
-		for _, r := range rows {
-			if guess {
-				gl, conf := guessAt(r.addr)
-				fmt.Printf("%-5d  0x%-18X  %-18s  %-12s  %.2f\n", r.idx, r.addr, r.val, gl, conf)
-			} else {
-				fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
-			}
+		sortResultRows(rows, sortBy, gFilter != "")
+		printResultRows(rows, guess)
+		if gFilter != "" {
+			fmt.Printf("%d match(es) guessed as %s with conf >= %.2f\n", len(rows), gFilter, gThresh)
 		}
 		return
 	}
 
 	n := 20
 	if len(args) > 0 { n, _ = strconv.Atoi(args[0]) }
-	showResults(n, sortBy, guess)
+	showResults(n, sortBy, guess, gFilter, gThresh)
 }
 
-// guessAt reads 8 bytes at addr (so guessType can sniff pointers/f64/i64 even
-// when the current data type is smaller) and returns a printable label + confidence.
-func guessAt(addr uintptr) (string, float64) {
-	if currentHandle == 0 {
-		return "-", 0
-	}
-	buf, err := ReadMemory(currentHandle, addr, 8)
-	if err != nil || len(buf) == 0 {
-		return "-", 0
-	}
-	g := guessType(buf, currentHandle, currentIs32Bit)
-	label := g.name
-	if g.extra != "" {
-		label = g.name + " " + g.extra
-	}
-	return label, g.confidence
+// validGuessTypes — labels guessType can produce, accepted as a filter after guess/g.
+var validGuessTypes = map[string]bool{
+	"f32": true, "f64": true, "i32": true, "i64": true,
+	"i8": true, "ptr": true, "zero": true,
 }
 
-func showResults(n int, sortBy string, guess bool) {
-	if scanner == nil || scanner.totalResults() == 0 {
-		fmt.Println("No results")
-		return
-	}
-	total := scanner.totalResults()
-	if n > total { n = total }
+type resultRow struct {
+	idx  int
+	addr uintptr
+	val  string
+	gl   string
+	conf float64
+}
 
-	type row struct{ idx int; addr uintptr; val string }
-	rows := make([]row, n)
-	for i := 0; i < n; i++ {
-		addr, _ := scanner.getResult(i)
-		val, err := scanner.ReadCurrentValue(addr, currentDT)
-		if err != nil { val = "?" }
-		rows[i] = row{i + 1, addr, val}
-	}
-	if sortBy == "val" {
+// sortResultRows orders rows by explicit sort key, or by confidence descending
+// when a guess filter is active (most likely matches first).
+func sortResultRows(rows []resultRow, sortBy string, byConf bool) {
+	switch {
+	case sortBy == "val":
 		sort.Slice(rows, func(i, j int) bool { return rows[i].val < rows[j].val })
-	} else if sortBy == "addr" {
+	case sortBy == "addr":
 		sort.Slice(rows, func(i, j int) bool { return rows[i].addr < rows[j].addr })
+	case byConf:
+		sort.Slice(rows, func(i, j int) bool { return rows[i].conf > rows[j].conf })
 	}
+}
 
+func printResultRows(rows []resultRow, guess bool) {
 	if guess {
 		fmt.Printf("%-5s  %-20s  %-18s  %-12s  %s\n", "#", "Address", "Value", "Guess", "Conf.")
 		fmt.Println(strings.Repeat("-", 75))
@@ -881,12 +878,83 @@ func showResults(n int, sortBy string, guess bool) {
 	}
 	for _, r := range rows {
 		if guess {
-			gl, conf := guessAt(r.addr)
-			fmt.Printf("%-5d  0x%-18X  %-18s  %-12s  %.2f\n", r.idx, r.addr, r.val, gl, conf)
+			fmt.Printf("%-5d  0x%-18X  %-18s  %-12s  %.2f\n", r.idx, r.addr, r.val, r.gl, r.conf)
 		} else {
 			fmt.Printf("%-5d  0x%-18X  %s\n", r.idx, r.addr, r.val)
 		}
 	}
+}
+
+// guessAt reads 8 bytes at addr (so guessType can sniff pointers/f64/i64 even
+// when the current data type is smaller) and returns a printable label, the
+// bare type name (for filtering), and the confidence.
+func guessAt(addr uintptr) (string, string, float64) {
+	if currentHandle == 0 {
+		return "-", "-", 0
+	}
+	buf, err := ReadMemory(currentHandle, addr, 8)
+	if err != nil || len(buf) == 0 {
+		return "-", "-", 0
+	}
+	g := guessType(buf, currentHandle, currentIs32Bit)
+	label := g.name
+	if g.extra != "" {
+		label = g.name + " " + g.extra
+	}
+	return label, g.name, g.confidence
+}
+
+func showResults(n int, sortBy string, guess bool, gFilter string, gThresh float64) {
+	if scanner == nil || scanner.totalResults() == 0 {
+		fmt.Println("No results")
+		return
+	}
+	total := scanner.totalResults()
+
+	var rows []resultRow
+
+	if gFilter != "" {
+		// Walk results from the start collecting matches until n are found.
+		// Each row costs 1-2 process reads (guessAt + value), so cap how many
+		// rows we examine to keep worst case around a second on huge sets.
+		const examineCap = 100_000
+		limit := total
+		if limit > examineCap { limit = examineCap }
+		examined := 0
+		for i := 0; i < limit && len(rows) < n; i++ {
+			addr, _ := scanner.getResult(i)
+			examined++
+			gl, name, conf := guessAt(addr)
+			if name != gFilter || conf < gThresh { continue }
+			val, err := scanner.ReadCurrentValue(addr, currentDT)
+			if err != nil { val = "?" }
+			rows = append(rows, resultRow{i + 1, addr, val, gl, conf})
+		}
+		sortResultRows(rows, sortBy, true)
+		printResultRows(rows, true)
+		fmt.Printf("%d match(es) guessed as %s with conf >= %.2f (examined first %d of %d results)\n",
+			len(rows), gFilter, gThresh, examined, total)
+		if len(rows) < n && examined < total {
+			fmt.Println("stopped at the examine cap; use 'next' to narrow results first")
+		}
+		return
+	}
+
+	if n > total { n = total }
+	rows = make([]resultRow, n)
+	for i := 0; i < n; i++ {
+		addr, _ := scanner.getResult(i)
+		val, err := scanner.ReadCurrentValue(addr, currentDT)
+		if err != nil { val = "?" }
+		var gl string
+		var conf float64
+		if guess {
+			gl, _, conf = guessAt(addr)
+		}
+		rows[i] = resultRow{i + 1, addr, val, gl, conf}
+	}
+	sortResultRows(rows, sortBy, false)
+	printResultRows(rows, guess)
 	if total > n {
 		fmt.Printf("... and %d more (use 'results <N>' to show more)\n", total-n)
 	}
