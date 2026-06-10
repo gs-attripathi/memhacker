@@ -387,8 +387,7 @@ POINTER RESULTS
 OTHER
   log                           - show log file path
   loglast [N]                   - copy log to clipboard (paste into GitHub issues)
-  exit / quit / q               - exit
-`)
+  exit / quit / q               - exit`)
 }
 
 func cmdListProcesses() {
@@ -805,7 +804,7 @@ func cmdResults(args []string) {
 			cmdResultsRemove(args[1:])
 			return
 		case "clear":
-			keptClear()
+			rsClear()
 			fmt.Println("Result set cleared")
 			return
 		}

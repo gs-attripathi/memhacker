@@ -22,26 +22,26 @@ import (
 // survives app restarts; entries go stale when the game restarts.
 //
 // Record layout (16 bytes): addr u64 | conf f32 | guessCode u8 | dt u8 | 2 pad
-// guessCode indexes keptTypeNames when the row came from a guess; 255 = not
+// guessCode indexes rsTypeNames when the row came from a guess; 255 = not
 // guessed, in which case dt (a DataType) says how to decode the value.
 
-const keptRecSize = 16
-const keptNoGuess = 255
+const rsRecSize = 16
+const rsNoGuess = 255
 
-var keptTypeNames = []string{"f32", "f64", "i32", "i64", "i8", "ptr", "zero", "?"}
+var rsTypeNames = []string{"f32", "f64", "i32", "i64", "i8", "ptr", "zero", "?"}
 
-func keptTypeByte(name string) byte {
-	for i, n := range keptTypeNames {
+func rsTypeByte(name string) byte {
+	for i, n := range rsTypeNames {
 		if n == name {
 			return byte(i)
 		}
 	}
-	return keptNoGuess
+	return rsNoGuess
 }
 
-func keptTypeName(b byte) string {
-	if int(b) < len(keptTypeNames) {
-		return keptTypeNames[b]
+func rsTypeName(b byte) string {
+	if int(b) < len(rsTypeNames) {
+		return rsTypeNames[b]
 	}
 	return ""
 }
@@ -65,37 +65,37 @@ func guessNameDT(name string) DataType {
 	return currentDT
 }
 
-func keptPath() string {
+func rsPath() string {
 	return filepath.Join(exeDir(), "memhacker_results.bin")
 }
 
-func keptCount() int {
-	fi, err := os.Stat(keptPath())
+func rsCount() int {
+	fi, err := os.Stat(rsPath())
 	if err != nil {
 		return 0
 	}
-	return int(fi.Size()) / keptRecSize
+	return int(fi.Size()) / rsRecSize
 }
 
-type keptRec struct {
+type rsRec struct {
 	addr  uintptr
 	conf  float64
 	gname string   // guess label, "" if the row wasn't guessed
 	dt    DataType // how to decode the value
 }
 
-// keptAddrSet streams every stored address into a transient set for dedupe.
-func keptAddrSet() map[uintptr]bool {
+// rsAddrSet streams every stored address into a transient set for dedupe.
+func rsAddrSet() map[uintptr]bool {
 	set := make(map[uintptr]bool)
-	f, err := os.Open(keptPath())
+	f, err := os.Open(rsPath())
 	if err != nil {
 		return set
 	}
 	defer f.Close()
-	buf := make([]byte, keptRecSize*4096)
+	buf := make([]byte, rsRecSize*4096)
 	for {
 		n, err := f.Read(buf)
-		for off := 0; off+keptRecSize <= n; off += keptRecSize {
+		for off := 0; off+rsRecSize <= n; off += rsRecSize {
 			set[uintptr(binary.LittleEndian.Uint64(buf[off:]))] = true
 		}
 		if err != nil {
@@ -105,21 +105,21 @@ func keptAddrSet() map[uintptr]bool {
 	return set
 }
 
-// keptAppend appends rows to the store, skipping already-stored addresses.
+// rsAppend appends rows to the store, skipping already-stored addresses.
 // Guessed rows record their guess label + confidence; plain rows record the
 // data type that was active when they were added.
-func keptAppend(rows []resultRow) (added, dupes int) {
+func rsAppend(rows []resultRow) (added, dupes int) {
 	if len(rows) == 0 {
 		return 0, 0
 	}
-	seen := keptAddrSet()
-	f, err := os.OpenFile(keptPath(), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	seen := rsAddrSet()
+	f, err := os.OpenFile(rsPath(), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		fmt.Println("  cannot open result set file:", err)
 		return 0, 0
 	}
 	defer f.Close()
-	var rec [keptRecSize]byte
+	var rec [rsRecSize]byte
 	for _, r := range rows {
 		if seen[r.addr] {
 			dupes++
@@ -129,10 +129,10 @@ func keptAppend(rows []resultRow) (added, dupes int) {
 		binary.LittleEndian.PutUint64(rec[0:], uint64(r.addr))
 		binary.LittleEndian.PutUint32(rec[8:], math.Float32bits(float32(r.conf)))
 		if r.gname != "" {
-			rec[12] = keptTypeByte(r.gname)
+			rec[12] = rsTypeByte(r.gname)
 			rec[13] = byte(guessNameDT(r.gname))
 		} else {
-			rec[12] = keptNoGuess
+			rec[12] = rsNoGuess
 			rec[13] = byte(currentDT)
 		}
 		rec[14], rec[15] = 0, 0
@@ -142,40 +142,40 @@ func keptAppend(rows []resultRow) (added, dupes int) {
 	return added, dupes
 }
 
-// keptRead returns up to n records starting at 0-based index start.
-func keptRead(start, n int) []keptRec {
-	f, err := os.Open(keptPath())
+// rsRead returns up to n records starting at 0-based index start.
+func rsRead(start, n int) []rsRec {
+	f, err := os.Open(rsPath())
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
-	buf := make([]byte, n*keptRecSize)
-	nr, _ := f.ReadAt(buf, int64(start)*keptRecSize)
-	recs := make([]keptRec, 0, nr/keptRecSize)
-	for off := 0; off+keptRecSize <= nr; off += keptRecSize {
-		recs = append(recs, keptRec{
+	buf := make([]byte, n*rsRecSize)
+	nr, _ := f.ReadAt(buf, int64(start)*rsRecSize)
+	recs := make([]rsRec, 0, nr/rsRecSize)
+	for off := 0; off+rsRecSize <= nr; off += rsRecSize {
+		recs = append(recs, rsRec{
 			addr:  uintptr(binary.LittleEndian.Uint64(buf[off:])),
 			conf:  float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[off+8:]))),
-			gname: keptTypeName(buf[off+12]),
+			gname: rsTypeName(buf[off+12]),
 			dt:    DataType(buf[off+13]),
 		})
 	}
 	return recs
 }
 
-// keptRemove rewrites the store without the given 1-based indices.
-func keptRemove(rm map[int]bool) {
-	src, err := os.Open(keptPath())
+// rsRemove rewrites the store without the given 1-based indices.
+func rsRemove(rm map[int]bool) {
+	src, err := os.Open(rsPath())
 	if err != nil {
 		return
 	}
-	tmp := keptPath() + ".tmp"
+	tmp := rsPath() + ".tmp"
 	dst, err := os.Create(tmp)
 	if err != nil {
 		src.Close()
 		return
 	}
-	buf := make([]byte, keptRecSize)
+	buf := make([]byte, rsRecSize)
 	idx := 0
 	for {
 		if _, err := io.ReadFull(src, buf); err != nil {
@@ -189,19 +189,19 @@ func keptRemove(rm map[int]bool) {
 	}
 	src.Close()
 	dst.Close()
-	os.Remove(keptPath())
-	os.Rename(tmp, keptPath())
+	os.Remove(rsPath())
+	os.Rename(tmp, rsPath())
 }
 
-func keptClear() {
-	if err := os.Remove(keptPath()); err != nil && !os.IsNotExist(err) {
+func rsClear() {
+	if err := os.Remove(rsPath()); err != nil && !os.IsNotExist(err) {
 		fmt.Println("  cannot clear result set:", err)
 	}
 }
 
-// keptValueString reads the live value at the record's address, decoded as the
+// rsValueString reads the live value at the record's address, decoded as the
 // type it was captured with (guessed type or the data type active at capture).
-func keptValueString(r keptRec) string {
+func rsValueString(r rsRec) string {
 	if currentHandle == 0 {
 		return "?"
 	}
@@ -342,19 +342,19 @@ func cmdResultsAdd(args []string) {
 		}
 	}
 
-	added, dupes := keptAppend(rows)
+	added, dupes := rsAppend(rows)
 	fmt.Printf("result set: +%d added", added)
 	if dupes > 0 {
 		fmt.Printf(" (%d already present)", dupes)
 	}
-	fmt.Printf(", total %d ('results view' to inspect)\n", keptCount())
+	fmt.Printf(", total %d ('results view' to inspect)\n", rsCount())
 }
 
 // cmdResultsView shows result-set entries with live values.
 // results view [count|range|list] [addr|val|conf] [guess|g [type] [minconf]]
 // guess re-runs the live type heuristic on each entry; with a type it filters.
 func cmdResultsView(args []string) {
-	total := keptCount()
+	total := rsCount()
 	if total == 0 {
 		fmt.Println("Result set is empty. Use 'results add <count|range>' to copy scan rows in.")
 		return
@@ -407,14 +407,14 @@ func cmdResultsView(args []string) {
 
 	type disp struct {
 		idx   int
-		rec   keptRec
+		rec   rsRec
 		val   string
 		gl    string
 		gconf float64
 	}
 	var rows []disp
 	for _, idx := range idxs {
-		recs := keptRead(idx-1, 1)
+		recs := rsRead(idx-1, 1)
 		if len(recs) == 0 {
 			continue
 		}
@@ -427,7 +427,7 @@ func cmdResultsView(args []string) {
 				continue
 			}
 		}
-		rows = append(rows, disp{idx, r, keptValueString(r), gl, gconf})
+		rows = append(rows, disp{idx, r, rsValueString(r), gl, gconf})
 	}
 	switch {
 	case sortBy == "addr":
@@ -477,7 +477,7 @@ func cmdResultsWrite(args []string) {
 		fmt.Println("Usage: results write <idx|range|list> <value>")
 		return
 	}
-	total := keptCount()
+	total := rsCount()
 	if total == 0 {
 		fmt.Println("Result set is empty")
 		return
@@ -490,7 +490,7 @@ func cmdResultsWrite(args []string) {
 			failed++
 			continue
 		}
-		recs := keptRead(idx-1, 1)
+		recs := rsRead(idx-1, 1)
 		if len(recs) == 0 {
 			failed++
 			continue
@@ -523,7 +523,7 @@ func cmdResultsFreeze(args []string) {
 		fmt.Println("Usage: results freeze <idx|range|list> <value>")
 		return
 	}
-	total := keptCount()
+	total := rsCount()
 	if total == 0 {
 		fmt.Println("Result set is empty")
 		return
@@ -536,7 +536,7 @@ func cmdResultsFreeze(args []string) {
 			failed++
 			continue
 		}
-		recs := keptRead(idx-1, 1)
+		recs := rsRead(idx-1, 1)
 		if len(recs) == 0 {
 			failed++
 			continue
@@ -561,7 +561,7 @@ func cmdResultsRemove(args []string) {
 		fmt.Println("Usage: results remove <idx|range|list>")
 		return
 	}
-	total := keptCount()
+	total := rsCount()
 	if total == 0 {
 		fmt.Println("Result set is empty")
 		return
@@ -576,6 +576,6 @@ func cmdResultsRemove(args []string) {
 		fmt.Println("No valid indices")
 		return
 	}
-	keptRemove(rm)
-	fmt.Printf("Removed %d entries, %d remain\n", len(rm), keptCount())
+	rsRemove(rm)
+	fmt.Printf("Removed %d entries, %d remain\n", len(rm), rsCount())
 }

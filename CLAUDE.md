@@ -27,7 +27,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 /opt/homebrew/bin/go build -ldflags="-s 
 | `pointer_results_windows.go` | prsave/prload/prverify/prwrite/prfreeze |
 | `process_memory_windows.go` | OpenProcess, ReadMemory, GetModules, EnumMemoryRegions |
 | `scanner_windows.go` | Value scan (FirstScan/NextScan), encode/decode values |
-| `keptresults_windows.go` | Disk-backed kept-results store (guess-filtered results accumulate here) |
+| `resultset_windows.go` | Disk-backed result set (`results add/view/write/freeze/remove/clear`) |
 | `freeze_windows.go` | 50ms freeze loop |
 | `alias_windows.go` | Address aliases (resolveAddr) |
 | `types.go` | ScanType, DataType enums, ScanParams, ScanResult, FrozenEntry |
@@ -305,7 +305,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.21.0-alpha | `results view` gains guess-based filtering and richer sorting. `guess`/`g [type] [minconf]` live-guesses each entry (Guess + GConf columns); with a type it filters to matches, examining the whole set by default, sorted by live confidence. New `conf` sort keyword (captured confidence, descending) alongside `addr`/`val`. |
 
-Current: **v2.21.0-alpha** (AppVersion in `logger.go`)
+| v2.21.1-alpha | Cleanup after the result-set design churn: `keptresults_windows.go` renamed to `resultset_windows.go`, all `kept*` identifiers renamed to `rs*`, stale file-table row fixed, vet nit (redundant trailing newline in help) fixed. No behavior change. |
+
+Current: **v2.21.1-alpha** (AppVersion in `logger.go`)
 
 ---
 
