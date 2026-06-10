@@ -301,7 +301,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.19.0-alpha | `results kept` accepts range/list index specs (`results kept 40-50`, `results kept 1,5,9`) in addition to a count. Bad count args no longer collapse to 0 rows. |
 
-Current: **v2.19.0-alpha** (AppVersion in `logger.go`)
+| v2.20.0-alpha | Result set becomes a first-class second set with explicit verbs. Bare `results` is back to a pure scan-set view (no side effects, no auto-ingestion). New subcommands: `results add <n|range|list> [g type [conf]]` copies scan rows in (deduped), `results view` (alias `v`) inspects with sort, `results write`/`freeze` (aliases `w`/`f`) act on entries via their captured type, `results remove` (alias `rm`) prunes, `results clear` empties. `kept` keyword removed. |
+
+Current: **v2.20.0-alpha** (AppVersion in `logger.go`)
 
 ---
 

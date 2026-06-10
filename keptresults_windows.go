@@ -5,19 +5,21 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
-// Disk-backed kept-results store: the user's curated working set.
-// Every explicit `results <selection>` invocation appends the rows it displayed
-// (after any guess filter), deduped by address. Nothing is held in RAM: appends
-// stream to the file, views read back a window on demand.
-// Bare `results` and `results kept [n]` view it; `results clear` is the ONLY
-// thing that clears it. Lives next to the exe (NOT in the swept memhacker_scans
-// dir) so it survives app restarts; entries go stale when the game restarts.
+// Disk-backed result set: the user's curated working set, fully separate from
+// the scan set. `results add <selection>` copies scan rows in (deduped by
+// address); `results view/write/freeze/remove/clear` operate on it directly.
+// Nothing is held in RAM: appends stream to the file, views read back a window
+// on demand. Lives next to the exe (NOT in the swept memhacker_scans dir) so it
+// survives app restarts; entries go stale when the game restarts.
 //
 // Record layout (16 bytes): addr u64 | conf f32 | guessCode u8 | dt u8 | 2 pad
 // guessCode indexes keptTypeNames when the row came from a guess; 255 = not
@@ -105,7 +107,7 @@ func keptAddrSet() map[uintptr]bool {
 
 // keptAppend appends rows to the store, skipping already-stored addresses.
 // Guessed rows record their guess label + confidence; plain rows record the
-// data type that was active when they were displayed.
+// data type that was active when they were added.
 func keptAppend(rows []resultRow) (added, dupes int) {
 	if len(rows) == 0 {
 		return 0, 0
@@ -113,7 +115,7 @@ func keptAppend(rows []resultRow) (added, dupes int) {
 	seen := keptAddrSet()
 	f, err := os.OpenFile(keptPath(), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
-		fmt.Println("  cannot open kept results file:", err)
+		fmt.Println("  cannot open result set file:", err)
 		return 0, 0
 	}
 	defer f.Close()
@@ -161,9 +163,39 @@ func keptRead(start, n int) []keptRec {
 	return recs
 }
 
+// keptRemove rewrites the store without the given 1-based indices.
+func keptRemove(rm map[int]bool) {
+	src, err := os.Open(keptPath())
+	if err != nil {
+		return
+	}
+	tmp := keptPath() + ".tmp"
+	dst, err := os.Create(tmp)
+	if err != nil {
+		src.Close()
+		return
+	}
+	buf := make([]byte, keptRecSize)
+	idx := 0
+	for {
+		if _, err := io.ReadFull(src, buf); err != nil {
+			break
+		}
+		idx++
+		if rm[idx] {
+			continue
+		}
+		dst.Write(buf)
+	}
+	src.Close()
+	dst.Close()
+	os.Remove(keptPath())
+	os.Rename(tmp, keptPath())
+}
+
 func keptClear() {
 	if err := os.Remove(keptPath()); err != nil && !os.IsNotExist(err) {
-		fmt.Println("  cannot clear kept results:", err)
+		fmt.Println("  cannot clear result set:", err)
 	}
 }
 
@@ -188,66 +220,311 @@ func keptValueString(r keptRec) string {
 	return decodeValue(r.dt, buf)
 }
 
-func keptHeader() {
-	fmt.Printf("%-5s  %-20s  %-18s  %-8s  %s\n", "#", "Address", "Value", "Type", "Conf.")
-	fmt.Println(strings.Repeat("-", 65))
-}
+// ---------------------------------------------------------------------------
+// result set commands (dispatched from cmdResults)
+// ---------------------------------------------------------------------------
 
-func printKeptRow(idx int, r keptRec) {
-	typ := r.gname
-	conf := fmt.Sprintf("%.2f", r.conf)
-	if typ == "" {
-		typ = dataTypeName(r.dt)
-		conf = "-"
+// resolveSelection turns a selection token into 1-based indices against total.
+// A plain number means "top n"; ranges/lists are explicit indices.
+func resolveSelection(sel string, total int) []int {
+	if strings.Contains(sel, "-") || strings.Contains(sel, ",") {
+		var idxs []int
+		for _, idx := range parseIndexSpec(sel) {
+			if idx >= 1 && idx <= total {
+				idxs = append(idxs, idx)
+			}
+		}
+		return idxs
 	}
-	fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %s\n", idx, r.addr, keptValueString(r), typ, conf)
-}
-
-func keptEmptyMsg() {
-	fmt.Println("Kept results list is empty.")
-	fmt.Println("Any 'results <n|range>' selection appends its rows here; 'results clear' empties it.")
-}
-
-func showKeptResults(n int) {
-	total := keptCount()
-	if total == 0 {
-		keptEmptyMsg()
-		return
+	n, err := strconv.Atoi(sel)
+	if err != nil || n <= 0 {
+		return nil
 	}
 	if n > total {
 		n = total
 	}
-	recs := keptRead(0, n)
-	keptHeader()
-	for i, r := range recs {
-		printKeptRow(i+1, r)
+	idxs := make([]int, n)
+	for i := range idxs {
+		idxs[i] = i + 1
 	}
-	fmt.Printf("Kept total: %d", total)
-	if total > n {
-		fmt.Printf(" (showing %d, use 'results kept <N>' for more)", n)
-	}
-	fmt.Println()
+	return idxs
 }
 
-// showKeptIndices shows specific kept entries by 1-based index (range/list form).
-func showKeptIndices(indices []int) {
-	total := keptCount()
-	if total == 0 {
-		keptEmptyMsg()
+// cmdResultsAdd copies selected scan-set rows into the result set.
+// results add <count|range|list> [guess|g <type> [minconf]]
+func cmdResultsAdd(args []string) {
+	if scanner == nil || scanner.totalResults() == 0 {
+		fmt.Println("No scan results. Run scan first")
 		return
 	}
-	keptHeader()
-	shown := 0
-	for _, idx := range indices {
-		if idx < 1 || idx > total {
-			continue
+	if len(args) == 0 {
+		fmt.Println("Usage: results add <count|range|list> [guess|g <type> [minconf]]")
+		fmt.Println("  e.g: results add 50             <- top 50 scan rows")
+		fmt.Println("       results add 100-200        <- scan rows #100-200")
+		fmt.Println("       results add 1-400 g i8 0.7 <- only i8-guessed rows from #1-400")
+		return
+	}
+
+	gFilter := ""
+	gThresh := 0.5
+	sel := ""
+	for i := 0; i < len(args); i++ {
+		switch strings.ToLower(args[i]) {
+		case "guess", "g":
+			if i+1 < len(args) && validGuessTypes[strings.ToLower(args[i+1])] {
+				gFilter = strings.ToLower(args[i+1])
+				i++
+				if i+1 < len(args) {
+					if t, err := strconv.ParseFloat(args[i+1], 64); err == nil && t > 0 && t <= 1 {
+						gThresh = t
+						i++
+					}
+				}
+			} else {
+				fmt.Println("guess filter needs a type: f32 f64 i32 i64 i8 ptr zero")
+				return
+			}
+		default:
+			if sel == "" {
+				sel = args[i]
+			}
 		}
+	}
+	if sel == "" {
+		fmt.Println("Missing selection (count, range, or list)")
+		return
+	}
+
+	total := scanner.totalResults()
+	var rows []resultRow
+	tryRow := func(idx int) bool {
+		addr, _ := scanner.getResult(idx - 1)
+		var gl, name string
+		var conf float64
+		if gFilter != "" {
+			gl, name, conf = guessAt(addr)
+			if name != gFilter || conf < gThresh {
+				return false
+			}
+		}
+		rows = append(rows, resultRow{idx, addr, "", gl, name, conf})
+		return true
+	}
+
+	isCount := !strings.Contains(sel, "-") && !strings.Contains(sel, ",")
+	if isCount && gFilter != "" {
+		// Count + filter: collect the first n MATCHES, walking from the top.
+		// Each row costs 1-2 process reads, so cap how far we walk.
+		n, err := strconv.Atoi(sel)
+		if err != nil || n <= 0 {
+			fmt.Println("Invalid selection:", sel)
+			return
+		}
+		const examineCap = 100_000
+		limit := total
+		if limit > examineCap {
+			limit = examineCap
+		}
+		matched := 0
+		for i := 1; i <= limit && matched < n; i++ {
+			if tryRow(i) {
+				matched++
+			}
+		}
+	} else {
+		idxs := resolveSelection(sel, total)
+		if idxs == nil {
+			fmt.Println("Invalid selection:", sel)
+			return
+		}
+		for _, idx := range idxs {
+			tryRow(idx)
+		}
+	}
+
+	added, dupes := keptAppend(rows)
+	fmt.Printf("result set: +%d added", added)
+	if dupes > 0 {
+		fmt.Printf(" (%d already present)", dupes)
+	}
+	fmt.Printf(", total %d ('results view' to inspect)\n", keptCount())
+}
+
+// cmdResultsView shows result-set entries with live values.
+// results view [count|range|list] [addr|val]
+func cmdResultsView(args []string) {
+	total := keptCount()
+	if total == 0 {
+		fmt.Println("Result set is empty. Use 'results add <count|range>' to copy scan rows in.")
+		return
+	}
+	sortBy := ""
+	sel := ""
+	for _, a := range args {
+		switch strings.ToLower(a) {
+		case "addr", "address":
+			sortBy = "addr"
+		case "val", "value":
+			sortBy = "val"
+		default:
+			if sel == "" {
+				sel = a
+			}
+		}
+	}
+	if sel == "" {
+		sel = "20"
+	}
+	idxs := resolveSelection(sel, total)
+	if idxs == nil {
+		fmt.Println("Invalid selection:", sel)
+		return
+	}
+
+	type disp struct {
+		idx int
+		rec keptRec
+		val string
+	}
+	var rows []disp
+	for _, idx := range idxs {
 		recs := keptRead(idx-1, 1)
 		if len(recs) == 0 {
 			continue
 		}
-		printKeptRow(idx, recs[0])
-		shown++
+		rows = append(rows, disp{idx, recs[0], keptValueString(recs[0])})
 	}
-	fmt.Printf("Shown %d of kept total %d\n", shown, total)
+	switch sortBy {
+	case "addr":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].rec.addr < rows[j].rec.addr })
+	case "val":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].val < rows[j].val })
+	}
+
+	fmt.Printf("%-5s  %-20s  %-18s  %-8s  %s\n", "#", "Address", "Value", "Type", "Conf.")
+	fmt.Println(strings.Repeat("-", 65))
+	for _, d := range rows {
+		typ := d.rec.gname
+		conf := fmt.Sprintf("%.2f", d.rec.conf)
+		if typ == "" {
+			typ = dataTypeName(d.rec.dt)
+			conf = "-"
+		}
+		fmt.Printf("%-5d  0x%-18X  %-18s  %-8s  %s\n", d.idx, d.rec.addr, d.val, typ, conf)
+	}
+	fmt.Printf("Shown %d of result set total %d\n", len(rows), total)
+}
+
+// cmdResultsWrite writes a value to result-set entries by index, encoded with
+// each entry's captured type. results write <idx|range|list> <value>
+func cmdResultsWrite(args []string) {
+	if currentHandle == 0 {
+		fmt.Println("Not attached")
+		return
+	}
+	if len(args) < 2 {
+		fmt.Println("Usage: results write <idx|range|list> <value>")
+		return
+	}
+	total := keptCount()
+	if total == 0 {
+		fmt.Println("Result set is empty")
+		return
+	}
+	valStr := strings.Join(args[1:], " ")
+	ok, failed := 0, 0
+	for _, idx := range parseIndexSpec(args[0]) {
+		if idx < 1 || idx > total {
+			fmt.Printf("  [%d] out of range (total %d)\n", idx, total)
+			failed++
+			continue
+		}
+		recs := keptRead(idx-1, 1)
+		if len(recs) == 0 {
+			failed++
+			continue
+		}
+		r := recs[0]
+		data, err := encodeValue(r.dt, valStr)
+		if err != nil {
+			fmt.Println("Invalid value:", err)
+			return
+		}
+		if err := WriteMemory(currentHandle, r.addr, data); err != nil {
+			fmt.Printf("  [%d] 0x%X write failed: %v\n", idx, r.addr, err)
+			failed++
+		} else {
+			fmt.Printf("  [%d] 0x%X = %s\n", idx, r.addr, decodeValue(r.dt, data))
+			ok++
+		}
+	}
+	fmt.Printf("Written %d/%d entries\n", ok, ok+failed)
+}
+
+// cmdResultsFreeze freezes result-set entries by index.
+// results freeze <idx|range|list> <value>
+func cmdResultsFreeze(args []string) {
+	if currentHandle == 0 {
+		fmt.Println("Not attached")
+		return
+	}
+	if len(args) < 2 {
+		fmt.Println("Usage: results freeze <idx|range|list> <value>")
+		return
+	}
+	total := keptCount()
+	if total == 0 {
+		fmt.Println("Result set is empty")
+		return
+	}
+	valStr := strings.Join(args[1:], " ")
+	ok, failed := 0, 0
+	for _, idx := range parseIndexSpec(args[0]) {
+		if idx < 1 || idx > total {
+			fmt.Printf("  [%d] out of range (total %d)\n", idx, total)
+			failed++
+			continue
+		}
+		recs := keptRead(idx-1, 1)
+		if len(recs) == 0 {
+			failed++
+			continue
+		}
+		r := recs[0]
+		data, err := encodeValue(r.dt, valStr)
+		if err != nil {
+			fmt.Println("Invalid value:", err)
+			return
+		}
+		id := freezer.Add(r.addr, data, fmt.Sprintf("rs[%d]", idx))
+		fmt.Printf("  [%d] 0x%X = %s (freeze #%d)\n", idx, r.addr, valStr, id)
+		ok++
+	}
+	fmt.Printf("Freezing %d/%d entries\n", ok, ok+failed)
+}
+
+// cmdResultsRemove deletes result-set entries by index.
+// results remove <idx|range|list>
+func cmdResultsRemove(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: results remove <idx|range|list>")
+		return
+	}
+	total := keptCount()
+	if total == 0 {
+		fmt.Println("Result set is empty")
+		return
+	}
+	rm := make(map[int]bool)
+	for _, idx := range parseIndexSpec(args[0]) {
+		if idx >= 1 && idx <= total {
+			rm[idx] = true
+		}
+	}
+	if len(rm) == 0 {
+		fmt.Println("No valid indices")
+		return
+	}
+	keptRemove(rm)
+	fmt.Printf("Removed %d entries, %d remain\n", len(rm), keptCount())
 }
