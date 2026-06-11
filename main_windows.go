@@ -284,11 +284,18 @@ SCANNING                        (default type: f32, default scope: writable priv
          scan between -0.01 0.01 all
   next <type> [value]           (alias: n) - filter existing results (same types as scan)
   next rel <r1> <r2>            - relation scan for obfuscated values (stored = a*real + b)
-                                  r1 = real value at scan/snapshot time, r2 = real value now
+                                  order is chronological: r1 = real value when the snapshot
+                                  (or last state) was taken, r2 = real value right now
                                   works after 'scan unknown' or on a narrowed result set
-  next rel <r>                  - refine: keep relations still consistent at real value r
+                                  use the two-arg form ONCE to establish, then refine:
+  next rel <r>                  - refine: tests current bytes against each address's SAME
+                                  recorded (a, b) line; a third/fourth point on one line.
+                                  Stronger than re-running the two-arg form, which re-fits
+                                  a fresh line from the last two states and forgets the old
   rel [n]                       - list relations: stored value, a, b, decoded real value
-  relwrite <idx|range> <real>   (alias: relw) - write a REAL value through the relation
+  relwrite <idx|range> <real>   (alias: relw) - give the REAL value you want; the ENCODED
+                                  a*real+b bytes get written, so the game shows your value
+                                  (plain iwrite here would store the raw number = garbage)
   results [n|range|list] [addr|val] [guess|g [type] [minconf]]
                                 (alias: r) - view the SCAN SET (pure display)
     optional guess column / guess type filter (conf >= minconf, default 0.5);

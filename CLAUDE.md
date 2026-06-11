@@ -310,7 +310,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.22.0-alpha | Linear-relation scan for obfuscated values (`relscan_windows.go`). `next rel <r1> <r2>` establishes per-address relations stored = a*real + b (after `scan unknown` vs snapshot, or on an in-RAM result set); slope must be integer or 1/integer to kill coincidences. `next rel <r>` refines against recorded (a, b). `rel [n]` lists relations with decoded real values; `relwrite <idx|range> <real>` writes a real value through the relation. relMap cleared on new scan/reset; establish capped at 1M survivors (RAM-only, disk sets must be narrowed first). |
 
-Current: **v2.22.0-alpha** (AppVersion in `logger.go`)
+| v2.22.1-alpha | Doc clarifications for the relation scan in help + README: argument order is chronological (old real value first, current second), the two-arg form is used once to establish and the one-arg refine is stronger than re-establishing, and relwrite takes the REAL value while writing the encoded bytes. No behavior change. |
+
+Current: **v2.22.1-alpha** (AppVersion in `logger.go`)
 
 ---
 
