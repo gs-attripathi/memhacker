@@ -75,6 +75,14 @@ Scans **writable private memory only** by default (game values are always here).
 | `next rel <r>` | Refine an established relation scan: change the real value in game, pass the new value, and only addresses still consistent with their **same recorded** `(a, b)` survive: a third/fourth point on one line. This is deliberately stronger than re-running the two-arg form, which re-fits a fresh line through just the last two states (and overwrites the recorded one), so something like a tick counter moving in clean multiples could keep passing re-establishes but fails a refine. A couple of one-arg passes kills coincidental matches. |
 | `rel [n]` | List surviving relations: stored value, `a`, `b`, and the **decoded real value** `(stored - b) / a`. The row whose decoded value tracks your in-game number is the winner. Indices match the scan set (`iwrite`, `results add` work on them). |
 | `relwrite <idx\|range\|list> <real>` (alias `relw`) | You give the REAL value you want; the tool writes the ENCODED bytes (`a*real + b` with that entry's recorded parameters), so the game decodes its memory as usual and displays your value. You work entirely in real values; the encoding happens under the hood. A plain `iwrite` on the same address would store the raw number where the game expects an encoded one and show garbage on screen. |
+| `txscan <value> [all]` | **Transform scan** for values stored under a fixed reversible transform that the relation scan can't catch (it isn't `a*real + b`, or the value never changes by a clean ratio). One pass searches negation, bitwise NOT, byteswap, and scaling by 2/4/8/10/16/100/256/1000 of `<value>` simultaneously and records which transform(s) matched each address. `all` includes non-writable/large regions. |
+| `txnext <value>` | Refine a transform scan: change the value in game, pass the new value, and only addresses where a recorded transform still encodes it survive (this also narrows ambiguous addresses to a single transform over a couple passes). |
+| `txlist [n]` | List transform hits: stored value, the matching transform name(s), and the decoded real value. |
+| `txwrite <idx\|range\|list> <real>` (alias `txw`) | Write a REAL value through the matched transform (encodes it the same way the game stores it). |
+| `xorscan <value> [all]` | **XOR pair scan** for `stored = real ^ key` where the key sits within 64 bytes of the value (same struct). XOR isn't linear, so the relation scan is blind to it. Integer types only. Records value-address and key-address pairs; both orderings are kept and refined down. Noisier and slower than other scans (checks several nearby slots per position). |
+| `xornext <value>` | Refine an XOR scan: change the value, and only pairs where `val ^ key` equals the new value survive. A couple of passes isolate the real pair. |
+| `xorlist [n]` | List XOR pairs: value address, key address, and the decoded value (`val ^ key`). |
+| `xorwrite <idx\|range\|list> <real>` (alias `xorw`) | Write a REAL value: reads the live key and writes `real ^ key` to the value address, so the game decodes your value. |
 | `results [N\|range\|list] [addr\|val] [guess\|g [type] [minconf]]` (alias `r`) | View the **scan set**: pure display, no side effects. Bare `results` shows the top 20; `results 50` / `results 100-200` / `results 1,3,5` select what to show. Optional `addr` / `val` sorts the displayed rows. Optional `guess` (or `g`) adds Guess + Confidence columns, same heuristic as `look` (f32 / f64 / i32 / i64 / i8 / ptr / zero). **Guess type filter:** follow `guess`/`g` with a type name to show only rows guessed as that type with confidence >= minconf (default 0.5), sorted by confidence, e.g. `results 20 guess f32`. The count form walks until N matches are found (caps at examining 100K rows). |
 | `results add <N\|range\|list> [g <type> [minconf]]` | Copy scan rows into the **result set**: a separate curated set, disk-backed only (`memhacker_results.bin` next to the exe), deduped by address. `results add 50` = top 50, `results add 100-200` = those rows, `results add 1-400 g i8 0.7` = only i8-guessed rows. Plain adds are captured with the active `type`; guess-filtered adds with their guessed type. The result set accumulates across scans and survives `reset` and app restarts; entries go stale after a game restart, so clear it then. |
 | `results view [N\|range\|list] [addr\|val\|conf] [guess\|g [type] [minconf]]` (alias `results v`) | Inspect the result set: any group of entries, with live values decoded as each entry's captured type. Read-only. Sorts: `addr` (address), `val` (value), `conf` (captured confidence, descending). `guess` re-runs the live type heuristic per entry and adds Guess + GConf columns; with a type name it filters to live matches with confidence >= minconf (default 0.5), examining the whole set by default and sorting by live confidence, e.g. `results view g f32 0.7` or `results view 1-100 g ptr`. |
@@ -271,6 +279,21 @@ next rel 70           <- refine (one arg from now on): same line, third point
 rel                   <- list survivors; 'Decoded' column shows the real value
 relwrite 1 999        <- you type real 999, encoded bytes get written
                          (game shows 999; plain iwrite would show garbage)
+```
+
+If the relation scan finds nothing, the value may use a non-linear encoding.
+Try the transform scan (static transforms) or the XOR scan (value ^ nearby key):
+
+```
+type i32
+txscan 100            <- searches negation / NOT / byteswap / x2..x1000 at once
+txnext 85             <- change value in game, refine
+txlist                <- 'Transform' column names the encoding, 'Decoded' the value
+txwrite 1 999         <- write real 999 through the matched transform
+
+xorscan 100           <- finds stored = 100 ^ key (key within 64 bytes)
+xornext 85            <- refine after changing the value
+xorwrite 1 999        <- writes 999 ^ key so the game shows 999
 ```
 
 ### Find a stable pointer chain (do once per game)

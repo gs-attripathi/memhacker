@@ -126,6 +126,22 @@ func main() {
 			cmdRelList(args)
 		case "relwrite", "relw":
 			cmdRelWrite(args)
+		case "txscan":
+			cmdTxScan(args)
+		case "txnext":
+			cmdTxNext(args)
+		case "txlist":
+			cmdTxList(args)
+		case "txwrite", "txw":
+			cmdTxWrite(args)
+		case "xorscan":
+			cmdXorScan(args)
+		case "xornext":
+			cmdXorNext(args)
+		case "xorlist":
+			cmdXorList(args)
+		case "xorwrite", "xorw":
+			cmdXorWrite(args)
 		case "results", "r":
 			cmdResults(args)
 		case "write", "w":
@@ -293,6 +309,17 @@ SCANNING                        (default type: f32, default scope: writable priv
                                   recorded (a, b) line; a third/fourth point on one line.
                                   Stronger than re-running the two-arg form, which re-fits
                                   a fresh line from the last two states and forgets the old
+  txscan <value> [all]          - transform scan for statically-encoded values:
+                                  searches negation, bitwise NOT, byteswap, and
+                                  x2..x1000 scaling of <value> in one pass
+  txnext <value>                - refine: keep hits still consistent at the new value
+  txlist [n]                    - list hits: stored, matched transform(s), decoded
+  txwrite <idx|range> <real>    (alias: txw) - write a REAL value via the matched transform
+  xorscan <value> [all]         - XOR scan: finds stored = value ^ key with the key
+                                  within 64 bytes (integer types only)
+  xornext <value>               - refine: keep pairs where val ^ key = new value
+  xorlist [n]                   - list pairs: value addr, key addr, decoded value
+  xorwrite <idx|range> <real>   (alias: xorw) - write a REAL value (re-encodes as real ^ key)
   rel [n]                       - list relations: stored value, a, b, decoded real value
   relwrite <idx|range> <real>   (alias: relw) - give the REAL value you want; the ENCODED
                                   a*real+b bytes get written, so the game shows your value
@@ -2299,6 +2326,8 @@ func cmdReset() {
 		scanner.clearDiskRes()
 		scanner.Results = nil
 		scanner.relMap = nil
+		scanner.txMap = nil
+		scanner.xorMap = nil
 	}
 	fmt.Println("Scan results cleared")
 }

@@ -286,6 +286,19 @@ type MemoryScanner struct {
 	diskRes  *diskResultSet  // disk-backed results (>= diskResThreshold)
 	snapshot *memSnapshot    // non-nil after ScanUnknown first scan
 	relMap   map[uintptr]relParams // per-address linear relations (next rel)
+	txMap    map[uintptr][]int     // per-address candidate transforms (txscan)
+	xorMap   map[uintptr]uintptr   // value addr -> key addr (xorscan)
+}
+
+// resetForSpecialScan clears all scan state before a txscan/xorscan, which
+// build their own result set + maps directly rather than via FirstScan.
+func (ms *MemoryScanner) resetForSpecialScan() {
+	ms.clearSnapshot()
+	ms.clearDiskRes()
+	ms.Results = nil
+	ms.relMap = nil
+	ms.txMap = nil
+	ms.xorMap = nil
 }
 
 func NewMemoryScanner(handle windows.Handle) *MemoryScanner {
@@ -402,6 +415,8 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	ms.clearDiskRes()
 	ms.Results = nil
 	ms.relMap = nil
+	ms.txMap = nil
+	ms.xorMap = nil
 
 	// Unknown scan: snapshot entire memory to disk instead of storing per-address results.
 	// CE does this via TScanFileWriter with async dual-buffer writes.

@@ -29,6 +29,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 /opt/homebrew/bin/go build -ldflags="-s 
 | `scanner_windows.go` | Value scan (FirstScan/NextScan), encode/decode values |
 | `resultset_windows.go` | Disk-backed result set (`results add/view/write/freeze/remove/clear`) |
 | `relscan_windows.go` | Linear-relation scan for obfuscated values (`next rel`, `rel`, `relwrite`) |
+| `transformscan_windows.go` | Transform scan (`txscan`) and XOR pair scan (`xorscan`) for non-linear encodings |
 | `freeze_windows.go` | 50ms freeze loop |
 | `alias_windows.go` | Address aliases (resolveAddr) |
 | `types.go` | ScanType, DataType enums, ScanParams, ScanResult, FrozenEntry |
@@ -322,7 +323,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.24.3-alpha | rel/relPreview number formatting: whole numbers print plainly (5479620) instead of %g scientific notation (5.47962e+06); fractional values keep %g. |
 
-Current: **v2.24.3-alpha** (AppVersion in `logger.go`)
+| v2.25.0-alpha | Two scans for non-linear obfuscation (`transformscan_windows.go`). `txscan <value>`: one parallel pass searching negation, bitwise NOT, byteswap, and x2..x1000 scaling simultaneously (needle map of transform encodings), recording matched transform(s) per address; `txnext` refines and disambiguates, `txlist`/`txwrite` inspect/write through the matched transform. `xorscan <value>` (int types only): finds stored = real ^ key with key within 64 bytes, recording value/key address pairs (both orderings, refined down); `xornext`/`xorlist`/`xorwrite`. Both reuse scanner.Results with side maps (txMap, xorMap) cleared on new scan/reset, capped at 1M. Shared helpers (maskFor/bitsAt/enumChunks/relFmt). |
+
+Current: **v2.25.0-alpha** (AppVersion in `logger.go`)
 
 ---
 
