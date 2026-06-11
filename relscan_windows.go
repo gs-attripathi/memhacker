@@ -459,6 +459,15 @@ func cmdNextRel(args []string) {
 	}
 }
 
+// relFmt prints whole numbers plainly (5479620, not 5.47962e+06) and falls
+// back to %g for fractional values.
+func relFmt(v float64) string {
+	if v == math.Trunc(v) && math.Abs(v) < 1e15 {
+		return strconv.FormatFloat(v, 'f', 0, 64)
+	}
+	return fmt.Sprintf("%g", v)
+}
+
 func relPreview(n int) {
 	if scanner == nil || len(scanner.relMap) == 0 {
 		return
@@ -470,7 +479,8 @@ func relPreview(n int) {
 			continue
 		}
 		v := toFloat64(currentDT, res.Value)
-		fmt.Printf("  [%d] 0x%X  stored=%g  a=%g b=%g  decoded=%g\n", i+1, res.Address, v, p.A, p.B, (v-p.B)/p.A)
+		fmt.Printf("  [%d] 0x%X  stored=%s  a=%s b=%s  decoded=%s\n", i+1, res.Address,
+			relFmt(v), relFmt(p.A), relFmt(p.B), relFmt((v-p.B)/p.A))
 		shown++
 		if shown >= n {
 			break
@@ -506,7 +516,8 @@ func cmdRelList(args []string) {
 			continue
 		}
 		v := toFloat64(currentDT, res.Value)
-		fmt.Printf("%-5d  0x%-18X  %-14g  %-10g  %-12g  %g\n", i+1, res.Address, v, p.A, p.B, (v-p.B)/p.A)
+		fmt.Printf("%-5d  0x%-18X  %-14s  %-10s  %-12s  %s\n", i+1, res.Address,
+			relFmt(v), relFmt(p.A), relFmt(p.B), relFmt((v-p.B)/p.A))
 		shown++
 	}
 	fmt.Printf("Shown %d of %d relation(s)\n", shown, len(scanner.relMap))

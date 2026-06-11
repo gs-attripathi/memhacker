@@ -320,7 +320,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.24.2-alpha | `scan unknown` no longer prints a trailing "No results" line (cmdScan tried to auto-display results, but unknown scans produce a snapshot, not listable results). Prints "Snapshotted ~N addresses" plus next-step guidance instead of "Found N results". |
 
-Current: **v2.24.2-alpha** (AppVersion in `logger.go`)
+| v2.24.3-alpha | rel/relPreview number formatting: whole numbers print plainly (5479620) instead of %g scientific notation (5.47962e+06); fractional values keep %g. |
+
+Current: **v2.24.3-alpha** (AppVersion in `logger.go`)
 
 ---
 
