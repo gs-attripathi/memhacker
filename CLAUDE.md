@@ -312,7 +312,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.22.1-alpha | Doc clarifications for the relation scan in help + README: argument order is chronological (old real value first, current second), the two-arg form is used once to establish and the one-arg refine is stronger than re-establishing, and relwrite takes the REAL value while writing the encoded bytes. No behavior change. |
 
-Current: **v2.22.1-alpha** (AppVersion in `logger.go`)
+| v2.23.0-alpha | `next rel` establish now works on disk-backed result sets (relEstablishFromDisk: streams addr/val chunks with gap-grouped live reads, same pattern as nextScanDisk; consumes the disk set, survivors capped at 1M become the in-RAM result set + relMap). Removes the "too many results for a relation pass" refusal after scan unknown -> next changed left >100K survivors on disk. Errors cleanly if the stored value size doesn't match the current data type. |
+
+Current: **v2.23.0-alpha** (AppVersion in `logger.go`)
 
 ---
 

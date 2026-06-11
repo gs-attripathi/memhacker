@@ -27,7 +27,8 @@ import (
 //   rel                     list survivors with decoded real values
 //   relwrite 1 999          write real value 999 through relation #1
 //
-// Establish also works on an in-RAM result set (e.g. after 'next changed').
+// Establish also works on an existing result set, RAM or disk-backed
+// (e.g. after 'next changed').
 // With only two samples any changed address fits SOME line, so establish
 // additionally requires the slope a to look like a real encoding multiplier
 // (integer or 1/integer). Each refine pass then kills random survivors fast.
@@ -251,6 +252,125 @@ func (ms *MemoryScanner) relEstablishFromResults(dt DataType, r1, r2 float64) in
 	return len(kept)
 }
 
+// relEstablishFromDisk establishes relations across a disk-backed result set,
+// streaming stored addresses/values in chunks and reading live memory in
+// gap-grouped spans (same pattern as nextScanDisk). Consumes the disk set;
+// survivors (capped at diskResThreshold) become the new in-RAM result set.
+func (ms *MemoryScanner) relEstablishFromDisk(dt DataType, r1, r2 float64) int {
+	old := ms.diskRes
+	sz := dataTypeSize(dt)
+	if old.valSize != sz {
+		fmt.Printf("  stored results hold %d-byte values but current type is %d bytes; set 'type' back or rescan\n", old.valSize, sz)
+		return 0
+	}
+	ms.diskRes = nil
+	defer old.delete()
+
+	dr := r2 - r1
+	total := old.count
+
+	const chunkBytes = 20 * 4096
+	chunkAddrs := chunkBytes / 8
+	if chunkAddrs < 1024 {
+		chunkAddrs = 1024
+	}
+	const maxGap = 64 * 1024
+	const maxSpan = 1 * 1024 * 1024
+
+	var processed, found int64
+	doneCh := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-doneCh:
+				return
+			case <-tick.C:
+				p := atomic.LoadInt64(&processed)
+				f := atomic.LoadInt64(&found)
+				pct := float64(p) / float64(total) * 100
+				fmt.Printf("\r  ... %d/%d (%.1f%%) | relations=%d   ", p, total, pct, f)
+			}
+		}
+	}()
+
+	addrChunk := make([]uintptr, chunkAddrs)
+	oldVals := make([]byte, chunkAddrs*sz)
+	var results []ScanResult
+	relMap := make(map[uintptr]relParams)
+	capped := false
+
+	pos := 0
+	for pos < old.count {
+		n := old.readAddressChunk(pos, chunkAddrs, addrChunk)
+		if n == 0 {
+			break
+		}
+		old.readValueChunk(pos, n, oldVals)
+		pos += n
+
+		i := 0
+		for i < n {
+			j := i + 1
+			for j < n {
+				gap := addrChunk[j] - addrChunk[j-1]
+				span := addrChunk[j] + uintptr(sz) - addrChunk[i]
+				if gap > maxGap || span > maxSpan {
+					break
+				}
+				j++
+			}
+			spanStart := addrChunk[i]
+			spanEnd := addrChunk[j-1] + uintptr(sz)
+			pageData, err := ReadMemory(ms.handle, spanStart, int(spanEnd-spanStart))
+			if err != nil || len(pageData) < sz {
+				i = j
+				continue
+			}
+			for k := i; k < j; k++ {
+				off := int(addrChunk[k] - spanStart)
+				if off+sz > len(pageData) {
+					continue
+				}
+				v1 := toFloat64(dt, oldVals[k*sz:k*sz+sz])
+				v2 := toFloat64(dt, pageData[off:off+sz])
+				if v1 == v2 || relBadFloat(dt, v1) || relBadFloat(dt, v2) {
+					continue
+				}
+				a := (v2 - v1) / dr
+				if !relNice(a) {
+					continue
+				}
+				b := v1 - a*r1
+				if math.Abs(b) > 1e12 {
+					continue
+				}
+				if len(results) >= diskResThreshold {
+					capped = true
+					continue
+				}
+				cp := make([]byte, sz)
+				copy(cp, pageData[off:off+sz])
+				results = append(results, ScanResult{Address: addrChunk[k], Value: cp})
+				relMap[addrChunk[k]] = relParams{a, b}
+				atomic.AddInt64(&found, 1)
+			}
+			i = j
+		}
+		atomic.AddInt64(&processed, int64(n))
+	}
+	close(doneCh)
+	fmt.Println()
+	if capped {
+		fmt.Printf("  capped at %d relations; results are partial. Narrow with 'next changed' first.\n", diskResThreshold)
+	}
+	ms.Results = results
+	ms.relMap = relMap
+	Log.Info("relEstablishFromDisk: %d relations from %d disk results", len(results), total)
+	return len(results)
+}
+
 // relVerify keeps only results whose live value still matches their stored
 // (a, b) relation at real value r.
 func (ms *MemoryScanner) relVerify(dt DataType, r float64) int {
@@ -306,8 +426,8 @@ func cmdNextRel(args []string) {
 		case scanner.snapshot != nil:
 			count = scanner.relEstablishFromSnapshot(currentDT, r1, r2)
 		case scanner.diskRes != nil:
-			fmt.Println("Too many results for a relation pass. Narrow below 1M with 'next changed' first.")
-			return
+			fmt.Printf("Establishing linear relations across %d disk-backed results...\n", scanner.diskRes.count)
+			count = scanner.relEstablishFromDisk(currentDT, r1, r2)
 		case len(scanner.Results) > 0:
 			fmt.Printf("Establishing linear relations across %d results...\n", len(scanner.Results))
 			count = scanner.relEstablishFromResults(currentDT, r1, r2)

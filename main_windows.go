@@ -286,7 +286,8 @@ SCANNING                        (default type: f32, default scope: writable priv
   next rel <r1> <r2>            - relation scan for obfuscated values (stored = a*real + b)
                                   order is chronological: r1 = real value when the snapshot
                                   (or last state) was taken, r2 = real value right now
-                                  works after 'scan unknown' or on a narrowed result set
+                                  works after 'scan unknown' or on any existing result
+                                  set (disk-backed sets are streamed in chunks)
                                   use the two-arg form ONCE to establish, then refine:
   next rel <r>                  - refine: tests current bytes against each address's SAME
                                   recorded (a, b) line; a third/fourth point on one line.
