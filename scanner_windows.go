@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,59 +26,69 @@ import (
 var scanActive     int32 // 1 when FirstScan is running
 var scanCancelFlag int32 // set to 1 to cancel current scan
 
+// encodeValue converts a user-typed value into raw bytes for dt.
+// Strict: a value that doesn't fully parse is an ERROR, never silently 0
+// (the old Sscanf version turned 'scan exact unknown' into a scan for 0.0
+// with float tolerance, matching half the game's memory).
+// Integer types accept 0x hex via base-0 parsing.
 func encodeValue(dt DataType, s string) ([]byte, error) {
 	buf := make([]byte, dataTypeSize(dt))
+	bad := func() ([]byte, error) {
+		return nil, fmt.Errorf("%q is not a valid %s value", s, dataTypeName(dt))
+	}
 	switch dt {
-	case TypeInt8:
-		var v int8
-		fmt.Sscanf(s, "%d", &v)
-		buf[0] = byte(v)
-	case TypeInt16:
-		var v int16
-		fmt.Sscanf(s, "%d", &v)
-		binary.LittleEndian.PutUint16(buf, uint16(v))
-	case TypeInt32:
-		var v int32
-		fmt.Sscanf(s, "%d", &v)
-		binary.LittleEndian.PutUint32(buf, uint32(v))
-	case TypeInt64:
-		var v int64
-		fmt.Sscanf(s, "%d", &v)
-		binary.LittleEndian.PutUint64(buf, uint64(v))
-	case TypeUInt8:
-		var v uint8
-		fmt.Sscanf(s, "%d", &v)
-		buf[0] = v
-	case TypeUInt16:
-		var v uint16
-		fmt.Sscanf(s, "%d", &v)
-		binary.LittleEndian.PutUint16(buf, v)
-	case TypeUInt32:
-		var v uint32
-		fmt.Sscanf(s, "%d", &v)
-		binary.LittleEndian.PutUint32(buf, v)
-	case TypeUInt64:
-		var v uint64
-		fmt.Sscanf(s, "%d", &v)
-		binary.LittleEndian.PutUint64(buf, v)
+	case TypeInt8, TypeInt16, TypeInt32, TypeInt64:
+		v, err := strconv.ParseInt(s, 0, dataTypeSize(dt)*8)
+		if err != nil {
+			return bad()
+		}
+		switch dt {
+		case TypeInt8:
+			buf[0] = byte(v)
+		case TypeInt16:
+			binary.LittleEndian.PutUint16(buf, uint16(v))
+		case TypeInt32:
+			binary.LittleEndian.PutUint32(buf, uint32(v))
+		case TypeInt64:
+			binary.LittleEndian.PutUint64(buf, uint64(v))
+		}
+	case TypeUInt8, TypeUInt16, TypeUInt32, TypeUInt64:
+		v, err := strconv.ParseUint(s, 0, dataTypeSize(dt)*8)
+		if err != nil {
+			return bad()
+		}
+		switch dt {
+		case TypeUInt8:
+			buf[0] = byte(v)
+		case TypeUInt16:
+			binary.LittleEndian.PutUint16(buf, uint16(v))
+		case TypeUInt32:
+			binary.LittleEndian.PutUint32(buf, uint32(v))
+		case TypeUInt64:
+			binary.LittleEndian.PutUint64(buf, v)
+		}
 	case TypeFloat32:
-		var v float64
-		fmt.Sscanf(s, "%f", &v)
-		bits := math.Float32bits(float32(v))
-		binary.LittleEndian.PutUint32(buf, bits)
+		v, err := strconv.ParseFloat(s, 32)
+		if err != nil {
+			return bad()
+		}
+		binary.LittleEndian.PutUint32(buf, math.Float32bits(float32(v)))
 	case TypeFloat64:
-		var v float64
-		fmt.Sscanf(s, "%f", &v)
-		bits := math.Float64bits(v)
-		binary.LittleEndian.PutUint64(buf, bits)
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return bad()
+		}
+		binary.LittleEndian.PutUint64(buf, math.Float64bits(v))
 	case TypeString:
 		return []byte(s), nil
 	case TypeBytes:
 		var out []byte
 		for _, tok := range splitHex(s) {
-			var b byte
-			fmt.Sscanf(tok, "%x", &b)
-			out = append(out, b)
+			b, err := strconv.ParseUint(tok, 16, 8)
+			if err != nil {
+				return nil, fmt.Errorf("%q is not a valid hex byte", tok)
+			}
+			out = append(out, byte(b))
 		}
 		return out, nil
 	}

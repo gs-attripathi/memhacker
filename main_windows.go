@@ -560,70 +560,77 @@ func parseDataType(s string) (DataType, bool) {
 	return TypeInt32, false
 }
 
+// reportBadScanValue prints the encode error plus a hint for the classic
+// 'scan exact unknown' mistake (the unknown scan takes no value).
+func reportBadScanValue(err error, val string) {
+	fmt.Println("Error:", err)
+	if strings.EqualFold(val, "unknown") || strings.EqualFold(val, "u") {
+		fmt.Println("  Hint: for an unknown-value scan the command is just 'scan unknown' (no 'exact').")
+	}
+}
+
 func parseScanArgs(scanType string, args []string) (ScanParams, bool) {
 	p := ScanParams{
 		DT:        currentDT,
 		Tolerance: 0,
 	}
-	switch strings.ToLower(scanType) {
-	case "exact", "e":
+	// One-value scan types share identical parse+validate handling
+	oneValue := func(st ScanType, usage string) bool {
 		if len(args) == 0 {
-			fmt.Println("Usage: scan exact <value>")
-			return p, false
+			fmt.Println("Usage:", usage)
+			return false
 		}
 		v, err := encodeValue(currentDT, args[0])
 		if err != nil {
-			fmt.Println("Error encoding value:", err)
+			reportBadScanValue(err, args[0])
+			return false
+		}
+		p.ST = st
+		p.Value = v
+		return true
+	}
+	switch strings.ToLower(scanType) {
+	case "exact", "e":
+		if !oneValue(ScanExact, "scan exact <value>") {
 			return p, false
 		}
-		p.ST = ScanExact
-		p.Value = v
 	case "unknown", "u":
 		p.ST = ScanUnknown
 	case "bigger", "gt", ">":
-		if len(args) == 0 {
-			fmt.Println("Usage: scan bigger <value>")
+		if !oneValue(ScanBiggerThan, "scan bigger <value>") {
 			return p, false
 		}
-		v, _ := encodeValue(currentDT, args[0])
-		p.ST = ScanBiggerThan
-		p.Value = v
 	case "smaller", "lt", "<":
-		if len(args) == 0 {
-			fmt.Println("Usage: scan smaller <value>")
+		if !oneValue(ScanSmallerThan, "scan smaller <value>") {
 			return p, false
 		}
-		v, _ := encodeValue(currentDT, args[0])
-		p.ST = ScanSmallerThan
-		p.Value = v
 	case "biggereq", "gte", ">=":
-		if len(args) == 0 {
+		if !oneValue(ScanBiggerThanOrEqual, "scan biggereq <value>") {
 			return p, false
 		}
-		v, _ := encodeValue(currentDT, args[0])
-		p.ST = ScanBiggerThanOrEqual
-		p.Value = v
 	case "smallereq", "lte", "<=":
-		if len(args) == 0 {
+		if !oneValue(ScanSmallerThanOrEqual, "scan smallereq <value>") {
 			return p, false
 		}
-		v, _ := encodeValue(currentDT, args[0])
-		p.ST = ScanSmallerThanOrEqual
-		p.Value = v
 	case "notequal", "ne", "!=":
-		if len(args) == 0 {
+		if !oneValue(ScanNotEqual, "scan notequal <value>") {
 			return p, false
 		}
-		v, _ := encodeValue(currentDT, args[0])
-		p.ST = ScanNotEqual
-		p.Value = v
 	case "between", "btw":
 		if len(args) < 2 {
 			fmt.Println("Usage: scan between <v1> <v2>")
 			return p, false
 		}
-		v1, _ := encodeValue(currentDT, args[0])
-		v2, _ := encodeValue(currentDT, args[1])
+		v1, err1 := encodeValue(currentDT, args[0])
+		if err1 != nil {
+			reportBadScanValue(err1, args[0])
+			return p, false
+		}
+		v2, err2 := encodeValue(currentDT, args[1])
+		if err2 != nil {
+			reportBadScanValue(err2, args[1])
+			return p, false
+		}
 		p.ST = ScanBetween
 		p.Value = v1
 		p.Value2 = v2
@@ -636,19 +643,13 @@ func parseScanArgs(scanType string, args []string) (ScanParams, bool) {
 	case "decreased", "dec", "-":
 		p.ST = ScanDecreased
 	case "incby":
-		if len(args) == 0 {
+		if !oneValue(ScanIncreasedBy, "scan incby <value>") {
 			return p, false
 		}
-		v, _ := encodeValue(currentDT, args[0])
-		p.ST = ScanIncreasedBy
-		p.Value = v
 	case "decby":
-		if len(args) == 0 {
+		if !oneValue(ScanDecreasedBy, "scan decby <value>") {
 			return p, false
 		}
-		v, _ := encodeValue(currentDT, args[0])
-		p.ST = ScanDecreasedBy
-		p.Value = v
 	default:
 		// Try as direct value (exact scan shortcut)
 		v, err := encodeValue(currentDT, scanType)

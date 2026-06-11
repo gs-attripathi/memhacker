@@ -316,7 +316,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.24.0-alpha | `scan unknown` zero-run optimization. Readers split each 4MB chunk into zero/non-zero runs at 64KB granularity (parallel, not under writer lock); all-zero runs are recorded as metadata only (snapshotChunk.offset = -1), skipping both the disk write and the read-back in later snapshot passes (readChunk synthesizes zeros). Lossless, no semantics change. Snapshot file writes now buffered (4MB bufio, flushed before reads). Summary prints zero MB skipped. Typically cuts snapshot I/O 30-60%. |
 
-Current: **v2.24.0-alpha** (AppVersion in `logger.go`)
+| v2.24.1-alpha | Strict value parsing. encodeValue now uses strconv and ERRORS on garbage instead of silently encoding 0 (the killer case: `scan exact unknown` was a scan for f32 0.0 with ±1.0 tolerance, matching half the game's memory and grinding for minutes; users thought it was THE unknown scan). All parseScanArgs value paths check the error; an unknown-like value prints a hint pointing at `scan unknown`. Bonus: integer types now accept 0x hex values (base-0 parsing). Affects scan/next/write/freeze value parsing everywhere. |
+
+Current: **v2.24.1-alpha** (AppVersion in `logger.go`)
 
 ---
 
