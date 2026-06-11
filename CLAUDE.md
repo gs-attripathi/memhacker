@@ -28,6 +28,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 /opt/homebrew/bin/go build -ldflags="-s 
 | `process_memory_windows.go` | OpenProcess, ReadMemory, GetModules, EnumMemoryRegions |
 | `scanner_windows.go` | Value scan (FirstScan/NextScan), encode/decode values |
 | `resultset_windows.go` | Disk-backed result set (`results add/view/write/freeze/remove/clear`) |
+| `relscan_windows.go` | Linear-relation scan for obfuscated values (`next rel`, `rel`, `relwrite`) |
 | `freeze_windows.go` | 50ms freeze loop |
 | `alias_windows.go` | Address aliases (resolveAddr) |
 | `types.go` | ScanType, DataType enums, ScanParams, ScanResult, FrozenEntry |
@@ -307,7 +308,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.21.1-alpha | Cleanup after the result-set design churn: `keptresults_windows.go` renamed to `resultset_windows.go`, all `kept*` identifiers renamed to `rs*`, stale file-table row fixed, vet nit (redundant trailing newline in help) fixed. No behavior change. |
 
-Current: **v2.21.1-alpha** (AppVersion in `logger.go`)
+| v2.22.0-alpha | Linear-relation scan for obfuscated values (`relscan_windows.go`). `next rel <r1> <r2>` establishes per-address relations stored = a*real + b (after `scan unknown` vs snapshot, or on an in-RAM result set); slope must be integer or 1/integer to kill coincidences. `next rel <r>` refines against recorded (a, b). `rel [n]` lists relations with decoded real values; `relwrite <idx|range> <real>` writes a real value through the relation. relMap cleared on new scan/reset; establish capped at 1M survivors (RAM-only, disk sets must be narrowed first). |
+
+Current: **v2.22.0-alpha** (AppVersion in `logger.go`)
 
 ---
 

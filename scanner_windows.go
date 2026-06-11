@@ -274,6 +274,7 @@ type MemoryScanner struct {
 	Results  []ScanResult    // in-memory results (< diskResThreshold)
 	diskRes  *diskResultSet  // disk-backed results (>= diskResThreshold)
 	snapshot *memSnapshot    // non-nil after ScanUnknown first scan
+	relMap   map[uintptr]relParams // per-address linear relations (next rel)
 }
 
 func NewMemoryScanner(handle windows.Handle) *MemoryScanner {
@@ -389,6 +390,7 @@ func (ms *MemoryScanner) FirstScan(params ScanParams) int {
 	ms.clearSnapshot()
 	ms.clearDiskRes()
 	ms.Results = nil
+	ms.relMap = nil
 
 	// Unknown scan: snapshot entire memory to disk instead of storing per-address results.
 	// CE does this via TScanFileWriter with async dual-buffer writes.

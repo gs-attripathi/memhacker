@@ -71,6 +71,10 @@ Scans **writable private memory only** by default (game values are always here).
 | `scan decby <val>` | Decreased by exactly this amount |
 | `scan notequal <val>` | Not equal to value |
 | `next <type> [val]` (alias `n`) | Filter existing results (same types as scan) |
+| `next rel <r1> <r2>` | **Relation scan** for obfuscated values stored as `a*real + b` (scaled, offset, negated encodings). Run after `scan unknown` (r1 = the real value when the snapshot was taken, r2 = the real value now) or on a narrowed in-RAM result set (r1 = real value at last pass). Keeps addresses whose change fits a plausible linear relation (slope must be an integer or 1/integer) and records per-address `(a, b)`. |
+| `next rel <r>` | Refine an established relation scan: change the real value in game, pass the new value, and only addresses still consistent with their recorded `(a, b)` survive. A couple of passes kills coincidental matches. |
+| `rel [n]` | List surviving relations: stored value, `a`, `b`, and the **decoded real value** `(stored - b) / a`. The row whose decoded value tracks your in-game number is the winner. Indices match the scan set (`iwrite`, `results add` work on them). |
+| `relwrite <idx\|range\|list> <real>` (alias `relw`) | Write a REAL value through a relation: encodes it as `a*real + b` with that entry's recorded parameters and writes the encoded bytes. |
 | `results [N\|range\|list] [addr\|val] [guess\|g [type] [minconf]]` (alias `r`) | View the **scan set**: pure display, no side effects. Bare `results` shows the top 20; `results 50` / `results 100-200` / `results 1,3,5` select what to show. Optional `addr` / `val` sorts the displayed rows. Optional `guess` (or `g`) adds Guess + Confidence columns, same heuristic as `look` (f32 / f64 / i32 / i64 / i8 / ptr / zero). **Guess type filter:** follow `guess`/`g` with a type name to show only rows guessed as that type with confidence >= minconf (default 0.5), sorted by confidence, e.g. `results 20 guess f32`. The count form walks until N matches are found (caps at examining 100K rows). |
 | `results add <N\|range\|list> [g <type> [minconf]]` | Copy scan rows into the **result set**: a separate curated set, disk-backed only (`memhacker_results.bin` next to the exe), deduped by address. `results add 50` = top 50, `results add 100-200` = those rows, `results add 1-400 g i8 0.7` = only i8-guessed rows. Plain adds are captured with the active `type`; guess-filtered adds with their guessed type. The result set accumulates across scans and survives `reset` and app restarts; entries go stale after a game restart, so clear it then. |
 | `results view [N\|range\|list] [addr\|val\|conf] [guess\|g [type] [minconf]]` (alias `results v`) | Inspect the result set: any group of entries, with live values decoded as each entry's captured type. Read-only. Sorts: `addr` (address), `val` (value), `conf` (captured confidence, descending). `guess` re-runs the live type heuristic per entry and adds Guess + GConf columns; with a type name it filters to live matches with confidence >= minconf (default 0.5), examining the whole set by default and sorting by live confidence, e.g. `results view g f32 0.7` or `results view 1-100 g ptr`. |
@@ -250,6 +254,22 @@ scan unknown          <- snapshots all memory to disk
 next changed          <- filter to addresses that changed
 next changed          <- filter again
 results
+```
+
+### Obfuscated values (relation scan)
+
+For games that don't store the displayed number directly but as `a*real + b`
+(scaled, offset, or negated). HP shows 100:
+
+```
+open game.exe
+scan unknown          <- snapshot while HP = 100
+                      <- take damage in game, HP now 85
+next rel 100 85       <- keep addresses whose change fits a linear relation
+                      <- take more damage, HP now 70
+next rel 70           <- refine: only consistent relations survive
+rel                   <- list survivors; 'Decoded' column shows the real value
+relwrite 1 999        <- write real 999 through relation #1 (auto-encoded)
 ```
 
 ### Find a stable pointer chain (do once per game)

@@ -122,6 +122,10 @@ func main() {
 		case "next", "n":
 			Log.Info("CMD: next %v", args)
 			cmdNext(args, reader)
+		case "rel":
+			cmdRelList(args)
+		case "relwrite", "relw":
+			cmdRelWrite(args)
 		case "results", "r":
 			cmdResults(args)
 		case "write", "w":
@@ -279,6 +283,12 @@ SCANNING                        (default type: f32, default scope: writable priv
          scan exact 100 range 0x1000000 0x2000000
          scan between -0.01 0.01 all
   next <type> [value]           (alias: n) - filter existing results (same types as scan)
+  next rel <r1> <r2>            - relation scan for obfuscated values (stored = a*real + b)
+                                  r1 = real value at scan/snapshot time, r2 = real value now
+                                  works after 'scan unknown' or on a narrowed result set
+  next rel <r>                  - refine: keep relations still consistent at real value r
+  rel [n]                       - list relations: stored value, a, b, decoded real value
+  relwrite <idx|range> <real>   (alias: relw) - write a REAL value through the relation
   results [n|range|list] [addr|val] [guess|g [type] [minconf]]
                                 (alias: r) - view the SCAN SET (pure display)
     optional guess column / guess type filter (conf >= minconf, default 0.5);
@@ -761,6 +771,10 @@ func cmdNext(args []string, reader *bufio.Reader) {
 	}
 	if len(args) == 0 {
 		fmt.Println("Usage: next <type> [value]")
+		return
+	}
+	if strings.ToLower(args[0]) == "rel" {
+		cmdNextRel(args[1:])
 		return
 	}
 	p, ok := parseScanArgs(args[0], args[1:])
@@ -2268,6 +2282,7 @@ func cmdReset() {
 		scanner.clearSnapshot()
 		scanner.clearDiskRes()
 		scanner.Results = nil
+		scanner.relMap = nil
 	}
 	fmt.Println("Scan results cleared")
 }
