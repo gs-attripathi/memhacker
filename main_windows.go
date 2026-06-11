@@ -761,6 +761,13 @@ func cmdScan(args []string, reader *bufio.Reader) {
 	start := time.Now()
 	count := scanner.FirstScan(p)
 	elapsed := time.Since(start)
+	// Unknown scan yields a snapshot, not listable results — showing the
+	// results view here printed a confusing trailing "No results" line.
+	if scanner.snapshot != nil {
+		fmt.Printf("Snapshotted ~%d addresses in %v\n", count, elapsed)
+		fmt.Println("Change values in game, then filter: 'next changed' / 'next decreased' / 'next rel <r1> <r2>'")
+		return
+	}
 	fmt.Printf("Found %d results in %v\n", count, elapsed)
 	if count > 0 && count <= 20 {
 		showResults(20, "", false, "", 0)

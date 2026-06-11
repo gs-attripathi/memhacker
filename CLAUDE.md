@@ -318,7 +318,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.24.1-alpha | Strict value parsing. encodeValue now uses strconv and ERRORS on garbage instead of silently encoding 0 (the killer case: `scan exact unknown` was a scan for f32 0.0 with ±1.0 tolerance, matching half the game's memory and grinding for minutes; users thought it was THE unknown scan). All parseScanArgs value paths check the error; an unknown-like value prints a hint pointing at `scan unknown`. Bonus: integer types now accept 0x hex values (base-0 parsing). Affects scan/next/write/freeze value parsing everywhere. |
 
-Current: **v2.24.1-alpha** (AppVersion in `logger.go`)
+| v2.24.2-alpha | `scan unknown` no longer prints a trailing "No results" line (cmdScan tried to auto-display results, but unknown scans produce a snapshot, not listable results). Prints "Snapshotted ~N addresses" plus next-step guidance instead of "Found N results". |
+
+Current: **v2.24.2-alpha** (AppVersion in `logger.go`)
 
 ---
 
