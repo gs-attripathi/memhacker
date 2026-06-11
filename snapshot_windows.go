@@ -3,13 +3,17 @@
 package main
 
 import (
+	"bufio"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 )
 
-// snapshotChunk records where one chunk's raw bytes were written in the snapshot file.
+// snapshotChunk records where one chunk's raw bytes were written in the
+// snapshot file. offset == -1 means the chunk was entirely zero bytes and
+// nothing was written; readChunk synthesizes zeros for it.
 type snapshotChunk struct {
 	addr   uintptr
 	size   int
@@ -19,13 +23,17 @@ type snapshotChunk struct {
 // memSnapshot writes all scanned memory to a temp file instead of RAM.
 // CE does the same via TScanFileWriter + dual buffers.
 // Allows unknown scan on multi-GB games without eating RAM.
+// All-zero runs (very common: calloc'd pools, reserved arenas) are recorded
+// as metadata only, skipping the disk write AND the later read-back.
 type memSnapshot struct {
-	mu      sync.Mutex
-	file    *os.File
-	path    string
-	fileOff int64 // current sequential write position
-	chunks  []snapshotChunk
-	valSize int
+	mu        sync.Mutex
+	file      *os.File
+	w         *bufio.Writer
+	path      string
+	fileOff   int64 // current sequential write position
+	chunks    []snapshotChunk
+	valSize   int
+	zeroBytes int64 // bytes recorded as zero runs (not written to disk)
 }
 
 func newMemSnapshot(valSize int) (*memSnapshot, error) {
@@ -34,7 +42,28 @@ func newMemSnapshot(valSize int) (*memSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot create snapshot file: %v", err)
 	}
-	return &memSnapshot{file: f, path: path, valSize: valSize}, nil
+	return &memSnapshot{
+		file:    f,
+		w:       bufio.NewWriterSize(f, 4*1024*1024),
+		path:    path,
+		valSize: valSize,
+	}, nil
+}
+
+// isAllZero reports whether b contains only zero bytes (8-byte fast path).
+func isAllZero(b []byte) bool {
+	n := len(b) &^ 7
+	for i := 0; i < n; i += 8 {
+		if binary.LittleEndian.Uint64(b[i:]) != 0 {
+			return false
+		}
+	}
+	for i := n; i < len(b); i++ {
+		if b[i] != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // writeChunk appends raw bytes to the snapshot file and records the chunk location.
@@ -42,7 +71,7 @@ func newMemSnapshot(valSize int) (*memSnapshot, error) {
 func (s *memSnapshot) writeChunk(addr uintptr, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.file.Write(data); err != nil {
+	if _, err := s.w.Write(data); err != nil {
 		return err
 	}
 	s.chunks = append(s.chunks, snapshotChunk{addr: addr, size: len(data), offset: s.fileOff})
@@ -50,8 +79,29 @@ func (s *memSnapshot) writeChunk(addr uintptr, data []byte) error {
 	return nil
 }
 
+// recordZero records an all-zero run as metadata only (no disk write).
+func (s *memSnapshot) recordZero(addr uintptr, size int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chunks = append(s.chunks, snapshotChunk{addr: addr, size: size, offset: -1})
+	s.zeroBytes += int64(size)
+}
+
+// flush must be called after all writes and before any readChunk.
+func (s *memSnapshot) flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.w != nil {
+		s.w.Flush()
+	}
+}
+
 // readChunk reads back a previously written chunk from disk.
+// Zero chunks are synthesized without touching the file.
 func (s *memSnapshot) readChunk(c snapshotChunk) ([]byte, error) {
+	if c.offset < 0 {
+		return make([]byte, c.size), nil
+	}
 	buf := make([]byte, c.size)
 	_, err := s.file.ReadAt(buf, c.offset)
 	return buf, err

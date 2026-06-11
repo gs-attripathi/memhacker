@@ -314,7 +314,9 @@ Uses **semver** (MAJOR.MINOR.PATCH). AppVersion is in `logger.go`.
 
 | v2.23.0-alpha | `next rel` establish now works on disk-backed result sets (relEstablishFromDisk: streams addr/val chunks with gap-grouped live reads, same pattern as nextScanDisk; consumes the disk set, survivors capped at 1M become the in-RAM result set + relMap). Removes the "too many results for a relation pass" refusal after scan unknown -> next changed left >100K survivors on disk. Errors cleanly if the stored value size doesn't match the current data type. |
 
-Current: **v2.23.0-alpha** (AppVersion in `logger.go`)
+| v2.24.0-alpha | `scan unknown` zero-run optimization. Readers split each 4MB chunk into zero/non-zero runs at 64KB granularity (parallel, not under writer lock); all-zero runs are recorded as metadata only (snapshotChunk.offset = -1), skipping both the disk write and the read-back in later snapshot passes (readChunk synthesizes zeros). Lossless, no semantics change. Snapshot file writes now buffered (4MB bufio, flushed before reads). Summary prints zero MB skipped. Typically cuts snapshot I/O 30-60%. |
+
+Current: **v2.24.0-alpha** (AppVersion in `logger.go`)
 
 ---
 

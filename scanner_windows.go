@@ -728,7 +728,31 @@ func (ms *MemoryScanner) firstScanUnknown(params ScanParams) int {
 				data, err := ReadMemory(ms.handle, chunk.addr, chunk.size)
 				atomic.AddInt64(&doneCount, 1)
 				if err != nil || len(data) == 0 { continue }
-				writeCh <- rawChunk{chunk.addr, data}
+				// Split into zero / non-zero runs at 64KB granularity.
+				// Zero runs become metadata only: they skip the disk write
+				// here and the read-back in later snapshot passes. The zero
+				// check runs in these parallel readers, not under the
+				// writer's lock.
+				const zwin = 64 * 1024
+				i := 0
+				for i < len(data) {
+					end := i + zwin
+					if end > len(data) { end = len(data) }
+					zero := isAllZero(data[i:end])
+					j := end
+					for j < len(data) {
+						e2 := j + zwin
+						if e2 > len(data) { e2 = len(data) }
+						if isAllZero(data[j:e2]) != zero { break }
+						j = e2
+					}
+					if zero {
+						snap.recordZero(chunk.addr+uintptr(i), j-i)
+					} else {
+						writeCh <- rawChunk{chunk.addr + uintptr(i), data[i:j]}
+					}
+					i = j
+				}
 			}
 		}()
 	}
@@ -761,6 +785,7 @@ func (ms *MemoryScanner) firstScanUnknown(params ScanParams) int {
 	}()
 
 	writerWg.Wait()
+	snap.flush()
 	close(doneCh)
 	fmt.Println()
 
@@ -774,9 +799,10 @@ func (ms *MemoryScanner) firstScanUnknown(params ScanParams) int {
 	ms.snapshot = snap
 	ms.Results = nil
 	count := snap.countAddresses()
-	fmt.Printf("  Snapshot complete: %.1f MB on disk, ~%d addresses ready\n",
-		float64(snap.fileOff)/(1024*1024), count)
-	Log.Info("firstScanUnknown: %.1fMB snapshotted, ~%d addresses", float64(snap.fileOff)/(1024*1024), count)
+	fmt.Printf("  Snapshot complete: %.1f MB on disk (%.1f MB zero runs skipped), ~%d addresses ready\n",
+		float64(snap.fileOff)/(1024*1024), float64(snap.zeroBytes)/(1024*1024), count)
+	Log.Info("firstScanUnknown: %.1fMB on disk, %.1fMB zero skipped, ~%d addresses",
+		float64(snap.fileOff)/(1024*1024), float64(snap.zeroBytes)/(1024*1024), count)
 	return count
 }
 
